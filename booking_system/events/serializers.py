@@ -13,8 +13,8 @@ class VenueSerializer(serializers.ModelSerializer):
 
 
 class EventSerializer(serializers.ModelSerializer):
-    category = CategorySerializer(read_only=True)
-    venue = VenueSerializer(read_only=True)
+    # category = CategorySerializer(read_only=True)
+    # venue = VenueSerializer(read_only=True)
 
     class Meta:
         model = Event

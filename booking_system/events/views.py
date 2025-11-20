@@ -6,9 +6,9 @@ from .models import Category, Venue, Event, Seat, Booking
 from .serializers import CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer
 
 
-class CategoryViewSet(viewsets.ModelViewSet()):
+class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
-    serializers_class = CategorySerializer
+    serializer_class = CategorySerializer
 
 class VenueViewSet(viewsets.ModelViewSet):
     queryset = Venue.objects.all()
