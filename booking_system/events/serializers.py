@@ -27,9 +27,24 @@ class SeatSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class BookingSerializer(serializers.ModelSerializer):
-    event = serializers.StringRelatedField()
-    seat = serializers.StringRelatedField()
+    # event = serializers.StringRelatedField()
+    # seat = serializers.StringRelatedField()
 
     class Meta:
         model = Booking
         fields = '__all__'
+
+    def validate(self, data):
+        seat = data['seat']
+
+        if seat.is_booked:
+            raise serializers.ValidationError('Это место уже забронировано')
+
+        return data
+    def create(self, validated_data):
+        seat = validated_data['seat']
+
+        seat.is_booked = True
+        seat.save()
+
+        return Booking.objects.create(**validated_data)
