@@ -26,9 +26,9 @@ class Event(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.date: %Y-%m-%d})"
-
+#
 class Seat(models.Model):
-    event = models.ForeignKey(Event, on_delete=models.CASCADE)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='seats')
     seat_number = models.CharField(max_length=5)
     is_booked = models.BooleanField(default=False)
     class Meta:

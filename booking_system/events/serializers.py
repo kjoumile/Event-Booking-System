@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Category, Venue, Event, Seat, Booking
+from django.db import transaction
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -29,7 +30,7 @@ class SeatSerializer(serializers.ModelSerializer):
 class BookingSerializer(serializers.ModelSerializer):
     # event = serializers.StringRelatedField()
     # seat = serializers.StringRelatedField()
-
+    #
     class Meta:
         model = Booking
         fields = '__all__'
@@ -47,8 +48,11 @@ class BookingSerializer(serializers.ModelSerializer):
         return data
     def create(self, validated_data):
         seat = validated_data['seat']
-
-        seat.is_booked = True
-        seat.save()
-
-        return Booking.objects.create(**validated_data)
+        with transaction.atomic():
+            seat = Seat.objects.select_for_update().get(pk=seat.pk)
+            if seat.is_booked:
+                raise serializers.ValidationError('Это место уже забронировано')
+            seat.is_booked = True
+            seat.save()
+            user = self.context['request'].user
+            return Booking.objects.create(**validated_data)
