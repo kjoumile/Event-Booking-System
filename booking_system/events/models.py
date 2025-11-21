@@ -31,7 +31,8 @@ class Seat(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE)
     seat_number = models.CharField(max_length=5)
     is_booked = models.BooleanField(default=False)
-
+    class Meta:
+        unique_together = ('event', 'seat_number')
     def __str__(self):
         return f"{self.event.title} - {self.seat_number}"
 

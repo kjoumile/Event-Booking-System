@@ -21,6 +21,15 @@ class EventViewSet(viewsets.ModelViewSet):
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
     serializer_class = SeatSerializer
+    def get_queryset(self):
+        queryset = Seat.objects.all()
+        event_id = self.request.query_params.get('event')
+
+        if event_id:
+            queryset = queryset.filter(event_id=event_id)
+
+        return queryset
+
 
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
