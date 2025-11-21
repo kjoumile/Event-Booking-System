@@ -19,7 +19,7 @@ class VenueViewSet(viewsets.ModelViewSet):
 class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.all()
     serializer_class = EventSerializer
-
+    #
     @action(detail=True, methods=['get'], url_path='free-seats')
     def free_seats(self, request, pk=None):
         event = self.get_object()

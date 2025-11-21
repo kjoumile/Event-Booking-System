@@ -30,7 +30,7 @@ class SeatSerializer(serializers.ModelSerializer):
 class BookingSerializer(serializers.ModelSerializer):
     # event = serializers.StringRelatedField()
     # seat = serializers.StringRelatedField()
-
+    #
     class Meta:
         model = Booking
         fields = '__all__'
