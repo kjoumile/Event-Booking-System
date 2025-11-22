@@ -28,12 +28,14 @@ class SeatSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class BookingSerializer(serializers.ModelSerializer):
-    # event = serializers.StringRelatedField()
-    # seat = serializers.StringRelatedField()
-    #
+    user_name = serializers.StringRelatedField(read_only=True, source='user')
+    event_title = serializers.StringRelatedField(read_only=True, source='event')
+    seat_number = serializers.StringRelatedField(read_only=True, source='seat')
+
     class Meta:
         model = Booking
         fields = '__all__'
+
 
     def validate(self, data):
         event = data['event']

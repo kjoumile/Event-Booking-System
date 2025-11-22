@@ -59,5 +59,5 @@ class BookingViewSet(viewsets.ModelViewSet):
         seat.save()
         instance.delete()
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
 # Create your views here.
