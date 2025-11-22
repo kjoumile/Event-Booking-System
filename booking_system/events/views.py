@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import Category, Venue, Event, Seat, Booking
 from .serializers import CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer
-
+from django_filters.rest_framework import DjangoFilterBackend
 
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
@@ -19,6 +19,8 @@ class VenueViewSet(viewsets.ModelViewSet):
 class EventViewSet(viewsets.ModelViewSet):
     queryset = Event.objects.all()
     serializer_class = EventSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['date', 'category', 'venue']
     #
     @action(detail=True, methods=['get'], url_path='free-seats')
     def free_seats(self, request, pk=None):
@@ -37,6 +39,8 @@ class EventViewSet(viewsets.ModelViewSet):
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
     serializer_class = SeatSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['event','is_booked']
     def get_queryset(self):
         queryset = Seat.objects.all()
         event_id = self.request.query_params.get('event')
