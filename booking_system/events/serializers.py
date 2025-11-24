@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Category, Venue, Event, Seat, Booking
+from .models import Category, Venue, Event, Seat, Booking, Role, Review, UserRole, Payment, Notification, Log
 from django.db import transaction
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -58,3 +58,50 @@ class BookingSerializer(serializers.ModelSerializer):
             seat.save()
             user = self.context['request'].user
             return Booking.objects.create(**validated_data)
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = '__all__'
+
+class UserRoleSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField()
+    role = serializers.StringRelatedField()
+
+    class Meta:
+        model = UserRole
+        fields = '__all__'
+
+class ReviewSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = Review
+        fields = '__all__'
+
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+class PaymentSerializer(serializers.ModelSerializer):
+    booking = serializers.StringRelatedField()
+
+    class Meta:
+        model = Payment
+        fields = '__all__'
+class NotificationSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = '__all__'
+
+    def create(self, validated_data):
+        validated_data['user'] = self.context['request'].user
+        return super().create(validated_data)
+class LogSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField()
+
+    class Meta:
+        model = Log
+        fields = '__all__'
