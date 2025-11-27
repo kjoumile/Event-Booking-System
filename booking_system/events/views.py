@@ -9,6 +9,7 @@ from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, 
                           RoleSerializer, UserRoleSerializer, ReviewSerializer, PaymentSerializer, NotificationSerializer,
                           LogSerializer)
 from django_filters.rest_framework import DjangoFilterBackend
+from .utils import create_log
 
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
@@ -56,16 +57,31 @@ class SeatViewSet(viewsets.ModelViewSet):
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         seat = instance.seat
-
+        user = request.user
         seat.is_booked = False
         seat.save()
+        Log.objects.create(
+            user = user,
+            action=f"Отмена бронирования места {seat.id} на событие {seat.event.id}",
+            ip_address = request._request.META.get("REMOTE_ADDR")
+        )
         instance.delete()
 
         return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
+
+    def perform_create(self, serializer):
+        booking = serializer.save(user=self.request.user)
+        create_log(self.request.user, f'Создал бронирование #{booking.id}')
+
+    def perform_destroy(self, instance):
+        create_log(self.request.user, f'Отменил бронирование #{instance.id}')
+        super().perform_destroy(instance)
+
 # Create your views here.
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
@@ -82,12 +98,25 @@ class ReviewViewSet(viewsets.ModelViewSet):
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def perform_create(self, serializer):
+        review = serializer.save(user=self.request.user)
+        create_log(self.request.user, f"Оставил отзыв #{review.id}")
+
+    def perform_update(self, serializer):
+        review = serializer.save()
+        create_log(self.request.user, f"Изменил отзыв #{review.id}")
+
+    def perform_destroy(self, instance):
+        create_log(self.request.user, f"Удалил отзыв #{instance.id}")
+        super().perform_destroy(instance)
+
 class PaymentViewSet(viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
 class NotificationViewSet(viewsets.ModelViewSet):
+    queryset = Notification.objects.all()
     serializer_class = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
