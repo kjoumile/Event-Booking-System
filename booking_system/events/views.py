@@ -1,11 +1,13 @@
 from django.shortcuts import render
 from django.http import HttpResponse
 
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Category, Venue, Event, Seat, Booking
-from .serializers import CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer
+from .models import Category, Venue, Event, Seat, Booking, Role, UserRole, Review, Payment, Notification, Log
+from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer,
+                          RoleSerializer, UserRoleSerializer, ReviewSerializer, PaymentSerializer, NotificationSerializer,
+                          LogSerializer)
 from django_filters.rest_framework import DjangoFilterBackend
 
 class CategoryViewSet(viewsets.ModelViewSet):
@@ -65,3 +67,35 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
 # Create your views here.
+class RoleViewSet(viewsets.ModelViewSet):
+    queryset = Role.objects.all()
+    serializer_class = RoleSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+class UserRoleViewSet(viewsets.ModelViewSet):
+    queryset = UserRole.objects.all()
+    serializer_class = UserRoleSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+class ReviewViewSet(viewsets.ModelViewSet):
+    queryset = Review.objects.all()
+    serializer_class = ReviewSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class PaymentViewSet(viewsets.ModelViewSet):
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class NotificationViewSet(viewsets.ModelViewSet):
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Пользователь может читать только СВОИ уведомления
+        return Notification.objects.filter(user=self.request.user)
+
+class LogViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Log.objects.all()
+    serializer_class = LogSerializer
+    permission_classes = [permissions.IsAdminUser]
