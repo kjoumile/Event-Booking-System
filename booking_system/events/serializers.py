@@ -75,6 +75,7 @@ class UserRoleSerializer(serializers.ModelSerializer):
 
 class ReviewSerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField(read_only=True)
+    event_name = serializers.CharField(source='event.title', read_only=True)
 
     class Meta:
         model = Review
@@ -83,6 +84,14 @@ class ReviewSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+    def validate(self, data):
+        user = self.context['request'].user
+        event = data['event']
+
+        if Review.objects.filter(user=user, event=event).exists():
+            raise serializers.ValidationError('Вы уже оставили отзыв')
+        return data
 class PaymentSerializer(serializers.ModelSerializer):
     booking = serializers.StringRelatedField()
 
