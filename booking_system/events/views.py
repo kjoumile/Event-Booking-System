@@ -11,6 +11,8 @@ from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, 
 from django_filters.rest_framework import DjangoFilterBackend
 from .utils import create_log
 
+from .notifications import create_notifications
+
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
@@ -39,6 +41,49 @@ class EventViewSet(viewsets.ModelViewSet):
             for seat in free_seats
         ]
         return Response(data)
+
+    def perform_update(self, serializer):
+        event = serializer.save()
+        for booking in event.booking_set.all():
+            create_notifications(
+                user=booking.user,
+                message=f"Событие '{event.name}' было изменено"
+            )
+
+    # def perform_destroy(self, instance):
+    #     users = [b.user for b in instance.booking_set.all()]
+    #     event_name = instance.title
+    #     # super().perform_destroy(instance)
+    #
+    #     for user in users:
+    #         create_notifications(
+    #             user=user,
+    #             message=f"Событие '{event_name}' было отменено"
+    #         )
+    def perform_destroy(self, instance):
+        bookings = list(instance.booking_set.select_related("user"))
+
+        event_title = instance.title
+
+        # Сначала создаем уведомления
+        for booking in bookings:
+            create_notifications(
+                user=booking.user,
+                message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено."
+            )
+
+            # освободить место
+            seat = booking.seat
+            seat.is_booked = False
+            seat.save()
+
+            # удалить бронирование
+            booking.delete()
+
+        create_log(self.request.user, f"Удалил событие «{event_title}»")
+
+        # теперь можно удалить событие
+        super().perform_destroy(instance)
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
     serializer_class = SeatSerializer
@@ -71,12 +116,21 @@ class BookingViewSet(viewsets.ModelViewSet):
             ip_address = request._request.META.get("REMOTE_ADDR")
         )
         instance.delete()
+        create_notifications(
+            user=user,
+            message=f"Бронирование места {seat.seat_number} на событие '{seat.event.name}' отменено"
+        )
 
         return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
 
     def perform_create(self, serializer):
         booking = serializer.save(user=self.request.user)
         create_log(self.request.user, f'Создал бронирование #{booking.id}')
+
+        create_notifications(
+            user = self.request.user,
+            message=f"Бронирование места {booking.seat.seat_number} на событие '{booking.event.title}'"
+        )
 
     def perform_destroy(self, instance):
         create_log(self.request.user, f'Отменил бронирование #{instance.id}')
