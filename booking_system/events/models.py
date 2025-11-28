@@ -23,6 +23,7 @@ class Event(models.Model):
     date = models.DateTimeField()
     venue = models.ForeignKey(Venue, on_delete=models.CASCADE)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True)
+    organizer = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
         return f"{self.title} ({self.date: %Y-%m-%d})"
@@ -52,7 +53,7 @@ class Role(models.Model):
         return self.name
 
 class UserRole(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="roles")
     role = models.ForeignKey(Role, on_delete=models.CASCADE)
 
     def __str__(self):

@@ -10,9 +10,20 @@ from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, 
                           LogSerializer)
 from django_filters.rest_framework import DjangoFilterBackend
 from .utils import create_log
-
+from rest_framework.permissions import IsAuthenticated, BasePermission
+from .permissions import IsAdmin, IsOrganizer, IsModerator
 from .notifications import create_notifications
+from rest_framework.exceptions import PermissionDenied
 
+class AdminOrOrganizer(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return (
+            user.is_authenticated and (
+                user.userrole_set.filter(role__name="ADMIN").exists() or
+                user.userrole_set.filter(role__name="ORGANIZER").exists()
+            )
+        )
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
@@ -42,13 +53,39 @@ class EventViewSet(viewsets.ModelViewSet):
         ]
         return Response(data)
 
+    def perform_create(self, serializer):
+        serializer.save(organizer=self.request.user)
+
+    def get_permissions(self):
+        if self.action in ["create"]:
+            return [IsOrganizer()]
+
+        if self.action in ["update", "partial_update", "destroy"]:
+            return [IsOrganizer()]  # проверит has_object_permission
+
+        return []  # просмотр — свободный
+
     def perform_update(self, serializer):
-        event = serializer.save()
-        for booking in event.booking_set.all():
+        event = self.get_object()
+
+        # Проверка прав — организатор может менять только свои
+        is_admin = self.request.user.userrole_set.filter(role__name="ADMIN").exists()
+
+        if event.organizer != self.request.user and not is_admin:
+            raise PermissionDenied("Вы не можете редактировать событие, созданное не вами")
+
+        # Сохраняем изменения
+        updated_event = serializer.save()
+
+        # Отправляем уведомления всем, у кого есть бронь
+        for booking in updated_event.booking_set.all():
             create_notifications(
                 user=booking.user,
-                message=f"Событие '{event.name}' было изменено"
+                message=f"Событие «{updated_event.title}» было изменено"
             )
+
+        # Записываем лог
+        create_log(self.request.user, f"Обновил событие «{updated_event.title}»")
 
     # def perform_destroy(self, instance):
     #     users = [b.user for b in instance.booking_set.all()]
@@ -84,6 +121,7 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # теперь можно удалить событие
         super().perform_destroy(instance)
+
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
     serializer_class = SeatSerializer
@@ -118,7 +156,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         instance.delete()
         create_notifications(
             user=user,
-            message=f"Бронирование места {seat.seat_number} на событие '{seat.event.name}' отменено"
+            message=f"Бронирование места {seat.seat_number} на событие '{seat.event.title}' отменено"
         )
 
         return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
@@ -151,6 +189,11 @@ class ReviewViewSet(viewsets.ModelViewSet):
     queryset = Review.objects.all()
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ["update", "partial_update", "destroy"]:
+            return [IsModerator()]  # только модератор или админ
+        return [permissions.IsAuthenticated()]  # создание — любой авторизованный
 
     def perform_create(self, serializer):
         review = serializer.save(user=self.request.user)
