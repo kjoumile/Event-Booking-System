@@ -20,13 +20,20 @@ class AdminOrOrganizer(BasePermission):
         user = request.user
         return (
             user.is_authenticated and (
-                user.userrole_set.filter(role__name="ADMIN").exists() or
-                user.userrole_set.filter(role__name="ORGANIZER").exists()
+                user.roles.filter(role__name="ADMIN").exists() or
+                user.roles.filter(role__name="ORGANIZER").exists()
             )
         )
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+
+    def get_permissions(self):
+        # Создание/изменение/удаление доступно только админам и модераторам
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [AdminOrOrganizer()]
+        # Просмотр доступен всем
+        return []
 
 class VenueViewSet(viewsets.ModelViewSet):
     queryset = Venue.objects.all()
@@ -57,11 +64,11 @@ class EventViewSet(viewsets.ModelViewSet):
         serializer.save(organizer=self.request.user)
 
     def get_permissions(self):
-        if self.action in ["create"]:
-            return [IsOrganizer()]
+        # if self.action in ["create"]:
+        #     return [IsOrganizer()]
 
-        if self.action in ["update", "partial_update", "destroy"]:
-            return [IsOrganizer()]  # проверит has_object_permission
+        if self.action in ["create","update", "partial_update", "destroy"]:
+            return [AdminOrOrganizer()]  # проверит has_object_permission
 
         return []  # просмотр — свободный
 
@@ -69,7 +76,7 @@ class EventViewSet(viewsets.ModelViewSet):
         event = self.get_object()
 
         # Проверка прав — организатор может менять только свои
-        is_admin = self.request.user.userrole_set.filter(role__name="ADMIN").exists()
+        is_admin = self.request.user.roles.filter(role__name="ADMIN").exists()
 
         if event.organizer != self.request.user and not is_admin:
             raise PermissionDenied("Вы не можете редактировать событие, созданное не вами")
@@ -210,6 +217,27 @@ class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def top_up(self, request):
+        """
+        Авторизованный пользователь пополняет свой баланс
+        """
+        serializer = AddBalanceSerializer(data=request.data)
+        if serializer.is_valid():
+            amount = serializer.validated_data['amount']
+
+            profile, _ = UserProfile.objects.get_or_create(user=request.user)
+            profile.balance += amount
+            profile.save()
+
+            # Создаём запись платежа
+            Payment.objects.create(
+                booking=None,  # если пополнение не связано с бронированием
+                amount=amount,
+                status="success"
+            )
+
+            return Response({"message": f"Баланс пополнен на {amount}"})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 class NotificationViewSet(viewsets.ModelViewSet):
     queryset = Notification.objects.all()
     serializer_class = NotificationSerializer
@@ -224,7 +252,22 @@ class LogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LogSerializer
     permission_classes = [permissions.IsAdminUser]
 
+class UserProfileViewSet(viewsets.ModelViewSet):
+    queryset = UserProfile.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        # Обычный пользователь видит только свой профиль
+        if self.request.user.is_staff:
+            return UserProfile.objects.all()  # админ видит всех
+        return UserProfile.objects.filter(user=self.request.user)
+
+def profile_page(request):
+    if not request.user.is_authenticated:
+        return redirect('/login/')  # если пользователь не залогинен
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    return render(request, 'templates/pages/profile.html', {'user': request.user, 'profile': profile})
 class RegisterView(APIView):
     permission_classes = []  # регистрация доступна всем
 

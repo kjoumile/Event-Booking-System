@@ -17,16 +17,17 @@ class VenueSerializer(serializers.ModelSerializer):
 class EventSerializer(serializers.ModelSerializer):
     # category = CategorySerializer(read_only=True)
     # venue = VenueSerializer(read_only=True)
+    organizer = serializers.StringRelatedField(read_only=True)
 
     class Meta:
         model = Event
         fields = '__all__'
 
 class SeatSerializer(serializers.ModelSerializer):
-    # event = serializers.StringRelatedField()
+    event_name = serializers.CharField(source='event.title', read_only=True)
     class Meta:
         model = Seat
-        fields = '__all__'
+        fields = ['id', 'seat_number', 'is_booked', 'event_name']
 
 class BookingSerializer(serializers.ModelSerializer):
     user_name = serializers.StringRelatedField(read_only=True, source='user')
@@ -50,15 +51,35 @@ class BookingSerializer(serializers.ModelSerializer):
 
         return data
     def create(self, validated_data):
+        user = self.context['request'].user
+        event = validated_data['event']
+        profile = user.profile
         seat = validated_data['seat']
+        if profile.balance < event.price:
+            raise serializers.ValidationError("Недостаточно средств на счету")
+
         with transaction.atomic():
             seat = Seat.objects.select_for_update().get(pk=seat.pk)
             if seat.is_booked:
                 raise serializers.ValidationError('Это место уже забронировано')
             seat.is_booked = True
             seat.save()
-            user = self.context['request'].user
-            return Booking.objects.create(**validated_data)
+            profile.balance -= event.price
+            profile.save()
+
+            booking = Booking.objects.create(
+                **validated_data
+            )
+
+            # 🔥 создаём платеж
+            Payment.objects.create(
+                booking=booking,
+                amount=booking.event.price,
+                status="success"
+            )
+
+            return booking
+            # return Booking.objects.create(**validated_data)
 
 
 class RoleSerializer(serializers.ModelSerializer):
@@ -99,6 +120,13 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = '__all__'
+class AddBalanceSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Сумма должна быть положительной")
+        return value
 class NotificationSerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField(read_only=True)
 
@@ -132,3 +160,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         UserRole.objects.create(user=user, role=role)
 
         return user
+class UserProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+
+    class Meta:
+        model = UserProfile
+        fields = ["id", "username", "balance"]
