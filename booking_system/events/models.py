@@ -9,6 +9,10 @@ class Category(models.Model):
     def __str__(self):
         return self.name
 
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
 class Venue(models.Model):
     name = models.CharField(max_length=200)
     address = models.CharField(max_length=300)
@@ -23,6 +27,13 @@ class Event(models.Model):
     date = models.DateTimeField()
     venue = models.ForeignKey(Venue, on_delete=models.CASCADE)
     category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True)
+    organizer = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Стоимость билета"
+    )
 
     def __str__(self):
         return f"{self.title} ({self.date: %Y-%m-%d})"
@@ -52,7 +63,7 @@ class Role(models.Model):
         return self.name
 
 class UserRole(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="roles")
     role = models.ForeignKey(Role, on_delete=models.CASCADE)
 
     def __str__(self):
@@ -97,3 +108,4 @@ class Log(models.Model):
 
     def __str__(self):
         return f"{self.created_at} – {self.action}"
+

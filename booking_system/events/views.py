@@ -1,18 +1,39 @@
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.http import HttpResponse
-
+from rest_framework.views import APIView
+from django.contrib.auth.models import User
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Category, Venue, Event, Seat, Booking, Role, UserRole, Review, Payment, Notification, Log
-from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer,
-                          RoleSerializer, UserRoleSerializer, ReviewSerializer, PaymentSerializer, NotificationSerializer,
-                          LogSerializer)
+from django.contrib.auth import login, authenticate, logout
+from .models import *
+from .serializers import *
 from django_filters.rest_framework import DjangoFilterBackend
+from .utils import create_log
+from rest_framework.permissions import IsAuthenticated, BasePermission
+from .permissions import IsAdmin, IsOrganizer, IsModerator
+from .notifications import create_notifications
+from rest_framework.exceptions import PermissionDenied
 
+class AdminOrOrganizer(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        return (
+            user.is_authenticated and (
+                user.roles.filter(role__name="ADMIN").exists() or
+                user.roles.filter(role__name="ORGANIZER").exists()
+            )
+        )
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+
+    def get_permissions(self):
+        # Создание/изменение/удаление доступно только админам и модераторам
+        if self.action in ["create", "update", "partial_update", "destroy"]:
+            return [AdminOrOrganizer()]
+        # Просмотр доступен всем
+        return []
 
 class VenueViewSet(viewsets.ModelViewSet):
     queryset = Venue.objects.all()
@@ -38,6 +59,67 @@ class EventViewSet(viewsets.ModelViewSet):
             for seat in free_seats
         ]
         return Response(data)
+
+    def perform_create(self, serializer):
+        serializer.save(organizer=self.request.user)
+
+    def get_permissions(self):
+        # if self.action in ["create"]:
+        #     return [IsOrganizer()]
+
+        if self.action in ["create","update", "partial_update", "destroy"]:
+            return [AdminOrOrganizer()]  # проверит has_object_permission
+
+        return []  # просмотр — свободный
+
+    def perform_update(self, serializer):
+        event = self.get_object()
+
+        # Проверка прав — организатор может менять только свои
+        is_admin = self.request.user.roles.filter(role__name="ADMIN").exists()
+
+        if event.organizer != self.request.user and not is_admin:
+            raise PermissionDenied("Вы не можете редактировать событие, созданное не вами")
+
+        # Сохраняем изменения
+        updated_event = serializer.save()
+
+        # Отправляем уведомления всем, у кого есть бронь
+        for booking in updated_event.booking_set.all():
+            create_notifications(
+                user=booking.user,
+                message=f"Событие «{updated_event.title}» было изменено"
+            )
+
+        # Записываем лог
+        create_log(self.request.user, f"Обновил событие «{updated_event.title}»")
+
+
+    def perform_destroy(self, instance):
+        bookings = list(instance.booking_set.select_related("user"))
+
+        event_title = instance.title
+
+        # Сначала создаем уведомления
+        for booking in bookings:
+            create_notifications(
+                user=booking.user,
+                message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено."
+            )
+
+            # освободить место
+            seat = booking.seat
+            seat.is_booked = False
+            seat.save()
+
+            # удалить бронирование
+            booking.delete()
+
+        create_log(self.request.user, f"Удалил событие «{event_title}»")
+
+        # теперь можно удалить событие
+        super().perform_destroy(instance)
+
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
     serializer_class = SeatSerializer
@@ -56,16 +138,47 @@ class SeatViewSet(viewsets.ModelViewSet):
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         seat = instance.seat
+        user = request.user
+
+        is_admin = user.roles.filter(role__name="ADMIN").exists()
+        is_moderator = user.roles.filter(role__name="MODERATOR").exists()
+
+        if instance.user != user and not (is_admin or is_moderator):
+            raise PermissionDenied("Вы не можете удалить чужое бронирование")
 
         seat.is_booked = False
         seat.save()
+        Log.objects.create(
+            user = user,
+            action=f"Отмена бронирования места {seat.id} на событие {seat.event.id}",
+            ip_address = request._request.META.get("REMOTE_ADDR")
+        )
         instance.delete()
+        create_notifications(
+            user=user,
+            message=f"Бронирование места {seat.seat_number} на событие '{seat.event.title}' отменено"
+        )
 
         return Response({'detail':'Бронирование отменено'},status=status.HTTP_204_NO_CONTENT)
+
+    def perform_create(self, serializer):
+        booking = serializer.save(user=self.request.user)
+        create_log(self.request.user, f'Создал бронирование #{booking.id}')
+
+        create_notifications(
+            user = self.request.user,
+            message=f"Бронирование места {booking.seat.seat_number} на событие '{booking.event.title}'"
+        )
+
+    def perform_destroy(self, instance):
+        create_log(self.request.user, f'Отменил бронирование #{instance.id}')
+        super().perform_destroy(instance)
+
 # Create your views here.
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
@@ -82,12 +195,51 @@ class ReviewViewSet(viewsets.ModelViewSet):
     serializer_class = ReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_permissions(self):
+        if self.action in ["update", "partial_update", "destroy"]:
+            return [IsModerator()]  # только модератор или админ
+        return [permissions.IsAuthenticated()]  # создание — любой авторизованный
+
+    def perform_create(self, serializer):
+        review = serializer.save(user=self.request.user)
+        create_log(self.request.user, f"Оставил отзыв #{review.id}")
+
+    def perform_update(self, serializer):
+        review = serializer.save()
+        create_log(self.request.user, f"Изменил отзыв #{review.id}")
+
+    def perform_destroy(self, instance):
+        create_log(self.request.user, f"Удалил отзыв #{instance.id}")
+        super().perform_destroy(instance)
+
 class PaymentViewSet(viewsets.ModelViewSet):
     queryset = Payment.objects.all()
     serializer_class = PaymentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def top_up(self, request):
+        """
+        Авторизованный пользователь пополняет свой баланс
+        """
+        serializer = AddBalanceSerializer(data=request.data)
+        if serializer.is_valid():
+            amount = serializer.validated_data['amount']
+
+            profile, _ = UserProfile.objects.get_or_create(user=request.user)
+            profile.balance += amount
+            profile.save()
+
+            # Создаём запись платежа
+            Payment.objects.create(
+                booking=None,  # если пополнение не связано с бронированием
+                amount=amount,
+                status="success"
+            )
+
+            return Response({"message": f"Баланс пополнен на {amount}"})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 class NotificationViewSet(viewsets.ModelViewSet):
+    queryset = Notification.objects.all()
     serializer_class = NotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -99,3 +251,65 @@ class LogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Log.objects.all()
     serializer_class = LogSerializer
     permission_classes = [permissions.IsAdminUser]
+
+class UserProfileViewSet(viewsets.ModelViewSet):
+    queryset = UserProfile.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Обычный пользователь видит только свой профиль
+        if self.request.user.is_staff:
+            return UserProfile.objects.all()  # админ видит всех
+        return UserProfile.objects.filter(user=self.request.user)
+
+def profile_page(request):
+    if not request.user.is_authenticated:
+        return redirect('/login/')  # если пользователь не залогинен
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    return render(request, 'templates/pages/profile.html', {'user': request.user, 'profile': profile})
+class RegisterView(APIView):
+    permission_classes = []  # регистрация доступна всем
+
+    def get(self, request):
+        # Отобразить форму регистрации
+        return render(request, "templates/events/register.html")
+
+    def post(self, request):
+        # Если POST из формы — получить данные из request.POST
+        data = request.data if request.content_type == "application/json" else request.POST
+        serializer = RegisterSerializer(data=data, context={"request": request})
+
+        if serializer.is_valid():
+            user = serializer.save()
+            login(request, user)
+            return redirect("/bookings")
+
+        return render(request, "templates/events/register.html", {"errors": serializer.errors})
+class LoginView(APIView):
+    permission_classes = []  # вход доступен всем
+
+    def get(self, request):
+        return render(request, "templates/events/login.html")
+
+    def post(self, request):
+        data = request.POST
+
+        username = data.get("username")
+        password = data.get("password")
+
+        user = authenticate(request, username=username, password=password)
+
+        if user is not None:
+            login(request, user)
+            return redirect("/bookings/")  # куда перенаправить после входа
+
+        return render(
+            request,
+            "templates/events/login.html",
+            {"error": "Неверный логин или пароль"}
+        )
+class LogoutView(APIView):
+    def post(self, request):
+        logout(request)
+        return Response({"detail": "Вы вышли из системы"}, status=status.HTTP_200_OK)
