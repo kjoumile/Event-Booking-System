@@ -1,10 +1,11 @@
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from django.contrib.auth.models import User
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.contrib.auth import login, authenticate, logout
 from .models import *
 from .serializers import *
 from django_filters.rest_framework import DjangoFilterBackend
@@ -86,16 +87,7 @@ class EventViewSet(viewsets.ModelViewSet):
         # Записываем лог
         create_log(self.request.user, f"Обновил событие «{updated_event.title}»")
 
-    # def perform_destroy(self, instance):
-    #     users = [b.user for b in instance.booking_set.all()]
-    #     event_name = instance.title
-    #     # super().perform_destroy(instance)
-    #
-    #     for user in users:
-    #         create_notifications(
-    #             user=user,
-    #             message=f"Событие '{event_name}' было отменено"
-    #         )
+
     def perform_destroy(self, instance):
         bookings = list(instance.booking_set.select_related("user"))
 
@@ -145,6 +137,13 @@ class BookingViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         seat = instance.seat
         user = request.user
+
+        is_admin = user.roles.filter(role__name="ADMIN").exists()
+        is_moderator = user.roles.filter(role__name="MODERATOR").exists()
+
+        if instance.user != user and not (is_admin or is_moderator):
+            raise PermissionDenied("Вы не можете удалить чужое бронирование")
+
         seat.is_booked = False
         seat.save()
         Log.objects.create(
@@ -231,7 +230,7 @@ class RegisterView(APIView):
 
     def get(self, request):
         # Отобразить форму регистрации
-        return render(request, "events/register.html")
+        return render(request, "templates/events/register.html")
 
     def post(self, request):
         # Если POST из формы — получить данные из request.POST
@@ -240,7 +239,34 @@ class RegisterView(APIView):
 
         if serializer.is_valid():
             user = serializer.save()
-            message = f"Пользователь {user.username} создан!"
-            return render(request, "events/register.html", {"message": message})
+            login(request, user)
+            return redirect("/bookings")
 
-        return render(request, "events/register.html", {"errors": serializer.errors})
+        return render(request, "templates/events/register.html", {"errors": serializer.errors})
+class LoginView(APIView):
+    permission_classes = []  # вход доступен всем
+
+    def get(self, request):
+        return render(request, "templates/events/login.html")
+
+    def post(self, request):
+        data = request.POST
+
+        username = data.get("username")
+        password = data.get("password")
+
+        user = authenticate(request, username=username, password=password)
+
+        if user is not None:
+            login(request, user)
+            return redirect("/bookings/")  # куда перенаправить после входа
+
+        return render(
+            request,
+            "templates/events/login.html",
+            {"error": "Неверный логин или пароль"}
+        )
+class LogoutView(APIView):
+    def post(self, request):
+        logout(request)
+        return Response({"detail": "Вы вышли из системы"}, status=status.HTTP_200_OK)

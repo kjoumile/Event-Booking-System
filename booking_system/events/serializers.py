@@ -35,7 +35,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Booking
-        fields = '__all__'
+        fields = ['id', 'event', 'seat', 'booking_time', 'user_name', 'event_title', 'seat_number']
 
 
     def validate(self, data):
@@ -124,7 +124,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         fields = ("username", "password")
 
     def create(self, validated_data):
-        return User.objects.create_user(
+        user = User.objects.create_user(
             username=validated_data["username"],
             password=validated_data["password"]
         )
+        role, created = Role.objects.get_or_create(name="USER")
+        UserRole.objects.create(user=user, role=role)
+
+        return user
