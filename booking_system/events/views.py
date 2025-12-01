@@ -1,13 +1,12 @@
 from django.shortcuts import render
 from django.http import HttpResponse
-
+from rest_framework.views import APIView
+from django.contrib.auth.models import User
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import Category, Venue, Event, Seat, Booking, Role, UserRole, Review, Payment, Notification, Log
-from .serializers import (CategorySerializer, VenueSerializer, EventSerializer, SeatSerializer, BookingSerializer,
-                          RoleSerializer, UserRoleSerializer, ReviewSerializer, PaymentSerializer, NotificationSerializer,
-                          LogSerializer)
+from .models import *
+from .serializers import *
 from django_filters.rest_framework import DjangoFilterBackend
 from .utils import create_log
 from rest_framework.permissions import IsAuthenticated, BasePermission
@@ -225,3 +224,23 @@ class LogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Log.objects.all()
     serializer_class = LogSerializer
     permission_classes = [permissions.IsAdminUser]
+
+
+class RegisterView(APIView):
+    permission_classes = []  # регистрация доступна всем
+
+    def get(self, request):
+        # Отобразить форму регистрации
+        return render(request, "events/register.html")
+
+    def post(self, request):
+        # Если POST из формы — получить данные из request.POST
+        data = request.data if request.content_type == "application/json" else request.POST
+        serializer = RegisterSerializer(data=data, context={"request": request})
+
+        if serializer.is_valid():
+            user = serializer.save()
+            message = f"Пользователь {user.username} создан!"
+            return render(request, "events/register.html", {"message": message})
+
+        return render(request, "events/register.html", {"errors": serializer.errors})

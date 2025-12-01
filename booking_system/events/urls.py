@@ -16,6 +16,9 @@ router.register('payments', views.PaymentViewSet)
 router.register('notifications', views.NotificationViewSet)
 router.register('logs', views.LogViewSet)
 
+
+
 urlpatterns = [
-    path('', include(router.urls))
+    path('', include(router.urls)),
+    path('register/', views.RegisterView.as_view(), name='register'),
 ]
