@@ -41,6 +41,7 @@ urlpatterns = [
     path('create/category/', views.create_category_page, name='create_category'),
     path('create/venue/', views.create_venue_page, name='create_venue'),
     path('create/event/', views.create_event_page, name='create_event'),
+    path('event/delete/<int:event_id>/', views.delete_event_post, name='delete_event_post'),
 
     # Пополнение баланса
     path('topup/', views.top_up_page, name='payment-topup'),

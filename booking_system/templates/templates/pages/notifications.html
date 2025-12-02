@@ -1,49 +1,45 @@
 {% extends '../base.html' %}
-{% block title %}Уведомления{% endblock %}
+{% block title %}Мои уведомления{% endblock %}
 
 {% block content %}
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h2>
             <i class="bi bi-bell"></i> Мои уведомления
-            {% if notifications %}
-            <span class="badge bg-primary rounded-pill ms-2">{{ notifications|length }}</span>
-            {% endif %}
         </h2>
-        
+
         {% if notifications %}
         <form method="POST" onsubmit="return confirm('Удалить все уведомления?');">
             {% csrf_token %}
             <input type="hidden" name="delete_all" value="true">
-            <button type="submit" class="btn btn-outline-danger btn-sm">
-                <i class="bi bi-trash"></i> Удалить все
+            <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i> Очистить все
             </button>
         </form>
         {% endif %}
     </div>
-    
+
     {% if notifications %}
         <div class="list-group">
             {% for notification in notifications %}
-            <div class="list-group-item list-group-item-action {% if not notification.is_read %}list-group-item-primary{% endif %}">
+            <div class="list-group-item">
                 <div class="d-flex w-100 justify-content-between align-items-start">
-                    <div class="flex-grow-1">
-                        <div class="d-flex align-items-center mb-2">
-                            {% if not notification.is_read %}
-                            <span class="badge bg-danger rounded-pill me-2">NEW</span>
-                            {% endif %}
-                            <h6 class="mb-0">{{ notification.message }}</h6>
+                    <div class="flex-grow-1 me-3">
+                        <div class="d-flex align-items-center mb-1">
+                            <i class="bi bi-info-circle me-2 text-primary"></i>
+                            <div>{{ notification.message }}</div>
                         </div>
                         <small class="text-muted">
-                            <i class="bi bi-clock"></i> {{ notification.created_at|timesince }} назад
+                            <i class="bi bi-clock"></i> {{ notification.created_at|date:"d.m.Y H:i" }}
                         </small>
                     </div>
-                    
-                    <form method="POST" class="ms-3">
+
+                    <form method="POST" class="ms-2">
                         {% csrf_token %}
                         <input type="hidden" name="delete_notification" value="true">
                         <input type="hidden" name="notification_id" value="{{ notification.id }}">
-                        <button type="submit" class="btn btn-sm btn-outline-secondary">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary"
+                                title="Удалить уведомление">
                             <i class="bi bi-x"></i>
                         </button>
                     </form>
@@ -51,37 +47,13 @@
             </div>
             {% endfor %}
         </div>
-        
-        <!-- Статистика -->
-        <div class="card mt-4">
-            <div class="card-body">
-                <h6 class="card-title">Статистика уведомлений</h6>
-                <div class="row text-center">
-                    <div class="col">
-                        <div class="p-3 bg-light rounded">
-                            <h4 class="mb-0">{{ notifications|length }}</h4>
-                            <small class="text-muted">Всего</small>
-                        </div>
-                    </div>
-                    <div class="col">
-                        <div class="p-3 bg-light rounded">
-                            <h4 class="mb-0">{{ notifications|length }}</h4>
-                            <small class="text-muted">За все время</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
     {% else %}
         <div class="text-center py-5">
-            <div class="mb-4">
-                <i class="bi bi-bell-slash" style="font-size: 4rem; color: #6c757d;"></i>
-            </div>
-            <h4 class="text-muted mb-3">Уведомлений нет</h4>
-            <p class="text-muted">Здесь будут появляться уведомления о ваших бронированиях, платежах и других действиях</p>
-            <a href="{% url 'events_page' %}" class="btn btn-primary mt-3">
-                <i class="bi bi-calendar-event"></i> Посмотреть события
+            <i class="bi bi-bell-slash" style="font-size: 3rem; color: #6c757d;"></i>
+            <h4 class="text-muted mt-3">Нет уведомлений</h4>
+            <p class="text-muted">Здесь будут появляться уведомления о ваших действиях в системе</p>
+            <a href="{% url 'events_page' %}" class="btn btn-primary mt-2">
+                <i class="bi bi-calendar-event"></i> Вернуться к событиям
             </a>
         </div>
     {% endif %}

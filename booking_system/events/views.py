@@ -3,6 +3,7 @@ from django.http import HttpResponse
 from datetime import datetime
 from django.core.exceptions import PermissionDenied
 from rest_framework.views import APIView
+from django.db import IntegrityError
 from django.contrib.auth.models import User
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
@@ -11,6 +12,8 @@ from django.contrib.auth import login, authenticate, logout
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
 from .models import *
+from asgiref.sync import sync_to_async
+import asyncio
 from .serializers import *
 from django_filters.rest_framework import DjangoFilterBackend
 from .utils import create_log
@@ -107,23 +110,35 @@ class EventViewSet(viewsets.ModelViewSet):
         # Записываем лог
         create_log(self.request.user, f"Обновил событие «{updated_event.title}»")
 
-
     def perform_destroy(self, instance):
         bookings = list(instance.booking_set.select_related("user"))
-
         event_title = instance.title
+        event_price = instance.price  # Добавляем цену
 
         # Сначала создаем уведомления
         for booking in bookings:
             create_notifications(
                 user=booking.user,
-                message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено."
+                message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
             )
 
             # освободить место
             seat = booking.seat
             seat.is_booked = False
             seat.save()
+
+
+            profile, _ = UserProfile.objects.get_or_create(user=booking.user)
+            profile.balance += event_price
+            profile.save()
+
+            # Запись о возврате
+            Payment.objects.create(
+                booking=booking,
+                amount=event_price,
+                status="refunded",
+                payment_type="refund"
+            )
 
             # удалить бронирование
             booking.delete()
@@ -395,62 +410,176 @@ class LogoutView(APIView):
         return Response({"detail": "Вы вышли из системы"}, status=status.HTTP_200_OK)
 
 
+# @login_required
+# def my_bookings_page(request):
+#     """Простая страница с бронированиями"""
+#     # Получаем бронирования пользователя
+#     bookings = Booking.objects.filter(user=request.user).select_related('event', 'seat')
+#
+#     # Обработка отмены бронирования
+#     if request.method == "POST" and "cancel_booking" in request.POST:
+#         booking_id = request.POST.get("booking_id")
+#
+#         try:
+#             booking = Booking.objects.get(id=booking_id, user=request.user)
+#
+#             # Проверяем, существует ли уже платеж для этого бронирования
+#             payment_exists = Payment.objects.filter(booking=booking).exists()
+#
+#             if not payment_exists:
+#                 # Создаем запись о возврате только если платежа не было
+#                 Payment.objects.create(
+#                     booking=booking,
+#                     amount=booking.event.price,
+#                     status="refunded"
+#                 )
+#             else:
+#                 # Если платеж уже существует, можно его обновить или оставить как есть
+#                 # Либо создать новый платеж с booking=None
+#                 Payment.objects.create(
+#                     booking=None,  # Если разрешено NULL в модели
+#                     amount=booking.event.price,
+#                     status="refunded"
+#                 )
+#
+#             # Освобождаем место
+#             seat = booking.seat
+#             seat.is_booked = False
+#             seat.save()
+#
+#             # Возвращаем деньги
+#             profile, _ = UserProfile.objects.get_or_create(user=request.user)
+#             profile.balance += booking.event.price
+#             profile.save()
+#
+#             # Удаляем бронирование
+#             booking.delete()
+#
+#             # Обновляем список
+#             bookings = Booking.objects.filter(user=request.user)
+#
+#         except Booking.DoesNotExist:
+#             pass
+#
+#     return render(request, "templates/pages/my_bookings.html", {
+#         "bookings": bookings
+#     })
 @login_required
 def my_bookings_page(request):
-    """Простая страница с бронированиями"""
+
     # Получаем бронирования пользователя
     bookings = Booking.objects.filter(user=request.user).select_related('event', 'seat')
 
-    # Обработка отмены бронирования
+    # Обработка отмены бронирования с транзакцией
     if request.method == "POST" and "cancel_booking" in request.POST:
         booking_id = request.POST.get("booking_id")
 
         try:
-            booking = Booking.objects.get(id=booking_id, user=request.user)
-
-            # Проверяем, существует ли уже платеж для этого бронирования
-            payment_exists = Payment.objects.filter(booking=booking).exists()
-
-            if not payment_exists:
-                # Создаем запись о возврате только если платежа не было
-                Payment.objects.create(
-                    booking=booking,
-                    amount=booking.event.price,
-                    status="refunded"
-                )
-            else:
-                # Если платеж уже существует, можно его обновить или оставить как есть
-                # Либо создать новый платеж с booking=None
-                Payment.objects.create(
-                    booking=None,  # Если разрешено NULL в модели
-                    amount=booking.event.price,
-                    status="refunded"
+            # НАЧАЛО ТРАНЗАКЦИИ С ЯВНЫМИ БЛОКИРОВКАМИ
+            with transaction.atomic():
+                # 1. ЯВНО БЛОКИРУЕМ бронирование для изменения
+                booking = Booking.objects.select_for_update().get(
+                    id=booking_id,
+                    user=request.user
                 )
 
-            # Освобождаем место
-            seat = booking.seat
-            seat.is_booked = False
-            seat.save()
+                # 2. БЛОКИРУЕМ место, чтобы никто другой не мог его забронировать
+                seat = Seat.objects.select_for_update().get(id=booking.seat.id)
 
-            # Возвращаем деньги
-            profile, _ = UserProfile.objects.get_or_create(user=request.user)
-            profile.balance += booking.event.price
-            profile.save()
+                # 3. БЛОКИРУЕМ профиль пользователя для изменения баланса
+                profile = UserProfile.objects.select_for_update().get(user=request.user)
 
-            # Удаляем бронирование
-            booking.delete()
+                # Проверяем, что событие еще не прошло
+                from django.utils import timezone
+                if booking.event.date <= timezone.now():
+                    # Если событие прошло, выбрасываем исключение
+                    # Это вызовет откат всей транзакции
+                    raise ValueError("Нельзя отменить бронирование на прошедшее событие")
 
-            # Обновляем список
-            bookings = Booking.objects.filter(user=request.user)
+                # 4. ОСВОБОЖДАЕМ МЕСТО
+                seat.is_booked = False
+                seat.save()  # UPDATE под блокировкой
+
+                # 5. ВОЗВРАЩАЕМ ДЕНЬГИ
+                refund_amount = booking.event.price
+                profile.balance += refund_amount
+                profile.save()  # UPDATE под блокировкой
+
+                # 6. СОЗДАЕМ ЗАПИСЬ О ВОЗВРАТЕ
+                # Проверяем существование платежа
+                try:
+                    existing_payment = Payment.objects.get(booking=booking)
+                    # Если платеж существует, создаем новый для возврата
+                    Payment.objects.create(
+                        booking=None,  # или booking для связи
+                        amount=refund_amount,
+                        status="refunded",
+                        payment_type="refund"
+                    )
+                except Payment.DoesNotExist:
+                    # Если платежа нет, создаем возврат с привязкой к бронированию
+                    Payment.objects.create(
+                        booking=booking,
+                        amount=refund_amount,
+                        status="refunded",
+                        payment_type="refund"
+                    )
+
+                # 7. СОЗДАЕМ ЛОГ ВНУТРИ ТРАНЗАКЦИИ
+                Log.objects.create(
+                    user=request.user,
+                    action=f"Отмена бронирования #{booking.id}. Возвращено {refund_amount} руб.",
+                    ip_address=request.META.get("REMOTE_ADDR")
+                )
+
+                # 8. УДАЛЯЕМ БРОНИРОВАНИЕ
+                booking.delete()
+
+                # ТРАНЗАКЦИЯ УСПЕШНО ЗАВЕРШЕНА
+                # Все изменения сохранены в БД
+
+                # 9. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ (после коммита транзакции)
+                create_notifications(
+                    user=request.user,
+                    message=f"Отмена бронирования. На ваш баланс возвращено {refund_amount} руб."
+                )
+
+                # Обновляем список бронирований (уже вне транзакции)
+                bookings = Booking.objects.filter(user=request.user)
+
+                return render(request, "templates/pages/my_bookings.html", {
+                    "bookings": bookings,
+                    "success": f"✅ Бронирование отменено. {refund_amount} руб. возвращены на баланс."
+                })
 
         except Booking.DoesNotExist:
-            pass
+            # Бронирование не найдено (транзакция не началась)
+            return render(request, "templates/pages/my_bookings.html", {
+                "bookings": bookings,
+                "error": "Бронирование не найдено"
+            })
+
+        except ValueError as e:
+            # Событие уже прошло (транзакция откатилась)
+            return render(request, "templates/pages/my_bookings.html", {
+                "bookings": bookings,
+                "error": str(e)
+            })
+
+        except Exception as e:
+            # Любая другая ошибка (транзакция откатилась)
+            import traceback
+            print(f"Ошибка при отмене бронирования: {e}")
+            print(traceback.format_exc())
+
+            return render(request, "templates/pages/my_bookings.html", {
+                "bookings": bookings,
+                "error": f"Ошибка при отмене бронирования. Пожалуйста, попробуйте позже."
+            })
 
     return render(request, "templates/pages/my_bookings.html", {
         "bookings": bookings
     })
-
-
 @login_required
 def event_detail_page(request, event_id):
     event = get_object_or_404(Event, id=event_id)
@@ -772,17 +901,30 @@ def create_event_page(request):
 
 
 def create_seats_for_event(event, capacity):
-    """Создает места для события"""
-    seats = []
+    """Создает места для события с обработкой дубликатов"""
+    seats_created = 0
+
     for i in range(1, capacity + 1):
-        seats.append(
-            Seat(
+        try:
+            # Создаем каждое место отдельно с обработкой исключений
+            Seat.objects.create(
                 event=event,
                 seat_number=str(i),
                 is_booked=False
             )
-        )
-    Seat.objects.bulk_create(seats)
+            seats_created += 1
+
+        except IntegrityError:
+            # Место с таким номером уже существует для этого события
+            # Пропускаем и продолжаем
+            print(f"Место {i} уже существует для события {event.id}")
+            continue
+        except Exception as e:
+            print(f"Ошибка создания места {i}: {e}")
+            continue
+
+    print(f"Создано мест: {seats_created} из {capacity}")
+    return seats_created
 
 
 @login_required
@@ -791,28 +933,110 @@ def notifications_page(request):
     # Получаем уведомления пользователя
     notifications = Notification.objects.filter(user=request.user).order_by('-created_at')
 
-    # Помечаем все непрочитанные уведомления как прочитанные
-    unread_notifications = notifications.filter(is_read=False)
-    if unread_notifications.exists():
-        unread_notifications.update(is_read=True)
+    # Помечаем все как прочитанные при заходе на страницу
+    if notifications.filter(is_read=False).exists():
+        notifications.filter(is_read=False).update(is_read=True)
 
     # Обработка удаления уведомлений
-    if request.method == "POST" and "delete_notification" in request.POST:
-        notification_id = request.POST.get("notification_id")
-        try:
-            notification = Notification.objects.get(id=notification_id, user=request.user)
-            notification.delete()
-            # Обновляем список
-            notifications = Notification.objects.filter(user=request.user).order_by('-created_at')
-        except Notification.DoesNotExist:
-            pass
-
-    # Обработка удаления всех уведомлений
-    if request.method == "POST" and "delete_all" in request.POST:
-        notifications.delete()
-        notifications = Notification.objects.none()
+    if request.method == "POST":
+        if "delete_all" in request.POST:
+            # Удалить все уведомления
+            notifications.delete()
+            notifications = Notification.objects.none()
+        elif "delete_notification" in request.POST:
+            # Удалить конкретное уведомление
+            notification_id = request.POST.get("notification_id")
+            try:
+                notification = Notification.objects.get(
+                    id=notification_id,
+                    user=request.user
+                )
+                notification.delete()
+                # Обновляем список
+                notifications = Notification.objects.filter(
+                    user=request.user
+                ).order_by('-created_at')
+            except Notification.DoesNotExist:
+                pass
 
     return render(request, "templates/pages/notifications.html", {
-        "notifications": notifications,
-        "unread_count": notifications.filter(is_read=False).count()  # для навбара
+        "notifications": notifications
     })
+
+
+# views.py - добавь в самый конец файла
+from django.contrib import messages
+
+
+@login_required
+def delete_event_post(request, event_id):
+    """Удаление события через POST (как в my_bookings)"""
+    if request.method != "POST":
+        return redirect('events_page')
+
+    # Получаем событие
+    event = get_object_or_404(Event, id=event_id)
+
+    # Проверяем права (как в EventViewSet)
+    user = request.user
+    is_admin = user.roles.filter(role__name="ADMIN").exists()
+    is_organizer = user.roles.filter(role__name="ORGANIZER").exists()
+
+    # Может ли удалить?
+    if not (is_admin or (is_organizer and event.organizer == user)):
+        return redirect('events_page')
+
+    try:
+        # Используем транзакцию, как в my_bookings_page
+        with transaction.atomic():
+            # Блокируем событие
+            event = Event.objects.select_for_update().get(id=event_id)
+
+            # Получаем все бронирования
+            bookings = list(event.booking_set.select_related("user", "seat"))
+            event_title = event.title
+            event_price = event.price
+
+            # Создаем уведомления и возвращаем деньги
+            for booking in bookings:
+                # 1. Уведомление
+                create_notifications(
+                    user=booking.user,
+                    message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
+                )
+
+                # 2. Освобождаем место
+                seat = booking.seat
+                seat.is_booked = False
+                seat.save()
+
+                # возврат денег
+                profile, _ = UserProfile.objects.select_for_update().get_or_create(user=booking.user)
+                profile.balance += event_price
+                profile.save()
+
+                # 4. Создаем запись о возврате
+                Payment.objects.create(
+                    booking=booking,  # Привязываем к бронированию
+                    amount=event_price,
+                    status="refunded",
+                    payment_type="refund"
+                )
+
+                # 5. Удаляем бронирование
+                booking.delete()
+
+            create_log(user, f"Удалил событие «{event_title}»")
+
+            # Удаляем само событие
+            event.delete()
+
+            messages.success(request, f"Событие «{event_title}» удалено! Все бронирования отменены, деньги возвращены.")
+
+    except Exception as e:
+        import traceback
+        print(f"Ошибка при удалении события: {e}")
+        print(traceback.format_exc())
+        messages.error(request, f"Ошибка при удалении: {e}")
+
+    return redirect('events_page')

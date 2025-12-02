@@ -80,11 +80,11 @@ class Review(models.Model):
         return f"{self.user.username} – {self.event.title}"
 
 class Payment(models.Model):
-    booking = models.OneToOneField(
+    booking = models.ForeignKey(
         Booking,
         on_delete=models.CASCADE,
-        null=True,  # Разрешаем NULL для возвратов/пополнений
-        blank=True  # Разрешаем пустое значение в формах
+        null=True,
+        blank=True
     )
     amount = models.DecimalField(max_digits=8, decimal_places=2)
     status = models.CharField(max_length=20, choices=[
