@@ -1,0 +1,92 @@
+<!-- booking_system/templates/pages/create_event.html -->
+{% extends '../base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">Создание события</h4>
+                </div>
+                <div class="card-body">
+                    {% if error %}
+                    <div class="alert alert-danger">
+                        {{ error }}
+                    </div>
+                    {% endif %}
+
+                    <form method="POST">
+                        {% csrf_token %}
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="title" class="form-label">Название события *</label>
+                                <input type="text" class="form-control" id="title" name="title" required>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <label for="price" class="form-label">Цена билета (руб.)</label>
+                                <input type="number" step="0.01" class="form-control" id="price" name="price" value="0">
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="description" class="form-label">Описание *</label>
+                            <textarea class="form-control" id="description" name="description" rows="4" required></textarea>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="date" class="form-label">Дата и время *</label>
+                                <input type="datetime-local" class="form-control" id="date" name="date"
+                                       min="{{ today }}" required>
+                            </div>
+
+                            <div class="col-md-6 mb-3">
+                                <label for="venue" class="form-label">Место проведения *</label>
+                                <select class="form-select" id="venue" name="venue" required>
+                                    <option value="">Выберите место...</option>
+                                    {% for venue in venues %}
+                                    <option value="{{ venue.id }}">
+                                        {{ venue.name }} ({{ venue.capacity }} мест)
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                                <small class="text-muted">Мест будет создано столько же, сколько вместимость места</small>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="category" class="form-label">Категория *</label>
+                                <select class="form-select" id="category" name="category" required>
+                                    <option value="">Выберите категорию...</option>
+                                    {% for category in categories %}
+                                    <option value="{{ category.id }}">{{ category.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="d-grid gap-2">
+                            <button type="submit" class="btn btn-primary">Создать событие</button>
+                            <a href="{% url 'events_page' %}" class="btn btn-secondary">Отмена</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="alert alert-info mt-3">
+                <h5>Информация:</h5>
+                <ul>
+                    <li>После создания события автоматически будут созданы места согласно вместимости выбранного места проведения</li>
+                    <li>Вы будете назначены организатором этого события</li>
+                    <li>Администраторы смогут редактировать и удалять любые события</li>
+                    <li>Организаторы могут редактировать только свои события</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

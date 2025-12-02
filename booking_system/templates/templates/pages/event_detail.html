@@ -1,0 +1,156 @@
+
+{% extends '../base.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <!-- Сообщения об ошибках -->
+    {% if error %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        {{ error }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+    
+    <!-- Сообщения об успехе -->
+    {% if success %}
+    <div class="alert alert-success alert-dismissible fade show" role="alert">
+        {{ success }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endif %}
+    
+    <h1>{{ event.title }}</h1>
+    
+    <!-- Информация о балансе -->
+    <div class="alert alert-info">
+        <strong>Ваш баланс:</strong> 
+        {% with request.user.profile.balance as balance %}
+            {{ balance }} руб.
+        {% endwith %}
+        <strong>Стоимость билета:</strong> {{ event.price }} руб.
+        {% if request.user.profile.balance < event.price %}
+            <span class="text-danger ms-3">
+                <i class="bi bi-exclamation-triangle"></i> Недостаточно средств!
+                <a href="{% url 'payment-topup' %}" class="btn btn-sm btn-warning ms-2">Пополнить баланс</a>
+            </span>
+        {% endif %}
+    </div>
+    
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title">Описание</h5>
+            <p class="card-text">{{ event.description }}</p>
+            
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                    <strong>Дата:</strong> {{ event.date|date:"d.m.Y H:i" }}
+                </li>
+                <li class="list-group-item">
+                    <strong>Место:</strong> {{ event.venue.name }}
+                </li>
+                <li class="list-group-item">
+                    <strong>Категория:</strong> {{ event.category.name }}
+                </li>
+                <li class="list-group-item">
+                    <strong>Организатор:</strong> {{ event.organizer.username }}
+                </li>
+                <li class="list-group-item">
+                    <strong>Цена:</strong> {{ event.price }} руб.
+                </li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Бронирование места -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5>Бронирование мест</h5>
+        </div>
+        <div class="card-body">
+            {% if free_seats %}
+                <form method="POST">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="seatSelect" class="form-label">Выберите место:</label>
+                        <select class="form-select" id="seatSelect" name="seat_id" required {% if request.user.profile.balance < event.price %}disabled{% endif %}>
+                            <option value="">-- Выберите место --</option>
+                            {% for seat in free_seats %}
+                            <option value="{{ seat.id }}">{{ seat.seat_number }}</option>
+                            {% endfor %}
+                        </select>
+                        {% if request.user.profile.balance < event.price %}
+                        <div class="form-text text-danger">
+                            Недостаточно средств для бронирования. Пополните баланс.
+                        </div>
+                        {% endif %}
+                    </div>
+                    <button type="submit" class="btn btn-primary" {% if request.user.profile.balance < event.price %}disabled{% endif %}>
+                        Забронировать за {{ event.price }} руб.
+                    </button>
+                    {% if request.user.profile.balance < event.price %}
+                    <a href="{% url 'payment-topup' %}" class="btn btn-warning ms-2">
+                        Пополнить баланс
+                    </a>
+                    {% endif %}
+                </form>
+            {% else %}
+                <div class="alert alert-warning">
+                    Все места забронированы
+                </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Отзывы -->
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5>Отзывы</h5>
+            {% if not user_review %}
+            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#reviewModal">
+                Написать отзыв
+            </button>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            {% if reviews %}
+                {% for review in reviews %}
+                <div class="border-bottom pb-3 mb-3">
+                    <div class="d-flex justify-content-between">
+                        <strong>{{ review.user.username }}</strong>
+                        <small class="text-muted">{{ review.created_at|date:"d.m.Y H:i" }}</small>
+                    </div>
+                    <p class="mt-2">{{ review.comment }}</p>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p class="text-muted">Отзывов пока нет. Будьте первым!</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно для отзыва -->
+<div class="modal fade" id="reviewModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="POST">
+                {% csrf_token %}
+                <div class="modal-header">
+                    <h5 class="modal-title">Написать отзыв</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="reviewText" class="form-label">Ваш отзыв:</label>
+                        <textarea class="form-control" id="reviewText" name="review_text" rows="4" required></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="submit" class="btn btn-primary">Отправить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

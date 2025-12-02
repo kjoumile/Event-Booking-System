@@ -1,0 +1,99 @@
+{% extends "../base.html" %}
+{% block title %}События{% endblock %}
+
+{% block content %}
+<h2 class="mb-4">Все события</h2>
+
+<!-- Простая проверка через if -->
+{% if user.is_authenticated and user.roles.all %}
+    <div class="mb-4">
+        <h4>Управление</h4>
+        <div class="btn-group" role="group">
+            <!-- Проверяем, есть ли у пользователя роль ADMIN или ORGANIZER -->
+            {% with roles=user.roles.all %}
+                {% for user_role in roles %}
+                    {% if user_role.role.name == "ADMIN" or user_role.role.name == "ORGANIZER" %}
+                        <a href="{% url 'create_event' %}" class="btn btn-success">
+                            <i class="bi bi-calendar-plus"></i> Создать событие
+                        </a>
+                    {% endif %}
+                {% endfor %}
+            {% endwith %}
+
+            <!-- Проверяем, есть ли у пользователя роль ADMIN, ORGANIZER или MODERATOR -->
+            {% with roles=user.roles.all %}
+                {% for user_role in roles %}
+                    {% if user_role.role.name == "ADMIN" or user_role.role.name == "ORGANIZER" or user_role.role.name == "MODERATOR" %}
+                        <a href="{% url 'create_category' %}" class="btn btn-info">
+                            <i class="bi bi-tags"></i> Создать категорию
+                        </a>
+                        <a href="{% url 'create_venue' %}" class="btn btn-warning">
+                            <i class="bi bi-geo-alt"></i> Создать место
+                        </a>
+                    {% endif %}
+                {% endfor %}
+            {% endwith %}
+        </div>
+    </div>
+{% endif %}
+
+<div class="row">
+    {% for event in events %}
+    <div class="col-md-4 mb-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body">
+                <h5 class="card-title">{{ event.title }}</h5>
+                <p class="card-text">
+                    <strong>Категория:</strong> {{ event.category.name }}<br>
+                    <strong>Дата:</strong> {{ event.date|date:"d.m.Y H:i" }}<br>
+                    <strong>Цена:</strong> {{ event.price }} ₽<br>
+                    <strong>Место:</strong> {{ event.venue.name }} ({{ event.venue.capacity }} мест)
+                </p>
+
+                <div class="d-flex justify-content-between">
+                    <a href="{% url 'event_detail_page' event.id %}" class="btn btn-primary">
+                        Подробнее
+                    </a>
+
+                    <!-- Кнопки для админов/организаторов -->
+                    {% if user.is_authenticated %}
+                        {% for user_role in user.roles.all %}
+                            {% if user_role.role.name == "ADMIN" or user_role.role.name == "ORGANIZER" %}
+                                <div class="btn-group">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                            data-bs-toggle="dropdown">
+                                        <i class="bi bi-gear"></i>
+                                    </button>
+                                    <ul class="dropdown-menu">
+                                        <li><a class="dropdown-item" href="#">
+                                            <i class="bi bi-pencil"></i> Редактировать
+                                        </a></li>
+                                        <li><a class="dropdown-item text-danger" href="#">
+                                            <i class="bi bi-trash"></i> Удалить
+                                        </a></li>
+                                    </ul>
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="col-12">
+        <div class="alert alert-info">
+            Событий пока нет.
+            {% if user.is_authenticated %}
+                {% for user_role in user.roles.all %}
+                    {% if user_role.role.name == "ADMIN" or user_role.role.name == "ORGANIZER" %}
+                        <a href="{% url 'create_event' %}" class="alert-link">Создайте первое событие!</a>
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% endblock %}

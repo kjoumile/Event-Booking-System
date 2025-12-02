@@ -1,0 +1,79 @@
+
+{% extends '../base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h4 class="mb-0">Пополнение баланса</h4>
+                </div>
+                <div class="card-body">
+                    <!-- Сообщения об ошибках -->
+                    {% if error %}
+                    <div class="alert alert-danger">
+                        {{ error }}
+                    </div>
+                    {% endif %}
+
+                    <!-- Текущий баланс -->
+                    <div class="alert alert-info mb-4">
+                        <strong>Текущий баланс:</strong> {{ request.user.profile.balance }} руб.
+                    </div>
+
+                    <form method="POST">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            <label for="amount" class="form-label">Сумма пополнения (руб.)</label>
+                            <input type="number"
+                                   class="form-control"
+                                   id="amount"
+                                   name="amount"
+                                   step="0.01"
+                                   min="1"
+                                   required
+                                   placeholder="100.00">
+                            <div class="form-text">Минимальная сумма: 1 руб.</div>
+                        </div>
+
+                        <div class="d-grid gap-2">
+                            <button type="submit" class="btn btn-primary">
+                                Пополнить баланс
+                            </button>
+                            <a href="{{ request.META.HTTP_REFERER|default:'/profile/' }}"
+                               class="btn btn-secondary">
+                                Назад
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Быстрые суммы -->
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h6>Быстрое пополнение:</h6>
+                    <div class="btn-group" role="group">
+                        <form method="POST" class="d-inline">
+                            {% csrf_token %}
+                            <input type="hidden" name="amount" value="100">
+                            <button type="submit" class="btn btn-outline-primary">100 руб.</button>
+                        </form>
+                        <form method="POST" class="d-inline">
+                            {% csrf_token %}
+                            <input type="hidden" name="amount" value="500">
+                            <button type="submit" class="btn btn-outline-primary">500 руб.</button>
+                        </form>
+                        <form method="POST" class="d-inline">
+                            {% csrf_token %}
+                            <input type="hidden" name="amount" value="1000">
+                            <button type="submit" class="btn btn-outline-primary">1000 руб.</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -80,17 +80,30 @@ class Review(models.Model):
         return f"{self.user.username} – {self.event.title}"
 
 class Payment(models.Model):
-    booking = models.OneToOneField(Booking, on_delete=models.CASCADE)
+    booking = models.OneToOneField(
+        Booking,
+        on_delete=models.CASCADE,
+        null=True,  # Разрешаем NULL для возвратов/пополнений
+        blank=True  # Разрешаем пустое значение в формах
+    )
     amount = models.DecimalField(max_digits=8, decimal_places=2)
     status = models.CharField(max_length=20, choices=[
         ('pending', 'Pending'),
         ('paid', 'Paid'),
         ('failed', 'Failed'),
+        ('refunded', 'Refunded'),  # Добавляем статус возврата
     ], default='pending')
     created_at = models.DateTimeField(auto_now_add=True)
+    payment_type = models.CharField(max_length=20, choices=[
+        ('booking', 'Booking Payment'),
+        ('refund', 'Refund'),
+        ('topup', 'Balance Top-up'),
+    ], default='booking')
 
     def __str__(self):
-        return f"Payment for {self.booking.id}: {self.status}"
+        if self.booking:
+            return f"Payment for booking #{self.booking.id}: {self.status}"
+        return f"Payment {self.payment_type}: {self.amount} ({self.status})"
 
 class Notification(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)

@@ -29,6 +29,7 @@ class SeatSerializer(serializers.ModelSerializer):
         model = Seat
         fields = ['id', 'seat_number', 'is_booked', 'event_name']
 
+
 class BookingSerializer(serializers.ModelSerializer):
     user_name = serializers.StringRelatedField(read_only=True, source='user')
     event_title = serializers.StringRelatedField(read_only=True, source='event')
@@ -38,23 +39,27 @@ class BookingSerializer(serializers.ModelSerializer):
         model = Booking
         fields = ['id', 'event', 'seat', 'booking_time', 'user_name', 'event_title', 'seat_number']
 
-
     def validate(self, data):
         event = data['event']
         seat = data['seat']
 
-        if seat.event !=event:
+        if seat.event != event:
             raise serializers.ValidationError('Нет такого места')
 
         if seat.is_booked:
             raise serializers.ValidationError('Это место уже забронировано')
 
         return data
+
     def create(self, validated_data):
         user = self.context['request'].user
         event = validated_data['event']
-        profile = user.profile
+
+        # Получаем или создаем профиль
+        profile, created = UserProfile.objects.get_or_create(user=user)
+
         seat = validated_data['seat']
+
         if profile.balance < event.price:
             raise serializers.ValidationError("Недостаточно средств на счету")
 
@@ -62,24 +67,23 @@ class BookingSerializer(serializers.ModelSerializer):
             seat = Seat.objects.select_for_update().get(pk=seat.pk)
             if seat.is_booked:
                 raise serializers.ValidationError('Это место уже забронировано')
+
             seat.is_booked = True
             seat.save()
+
+            # Списание средств
             profile.balance -= event.price
             profile.save()
 
-            booking = Booking.objects.create(
-                **validated_data
-            )
+            booking = Booking.objects.create(**validated_data)
 
-            # 🔥 создаём платеж
             Payment.objects.create(
                 booking=booking,
-                amount=booking.event.price,
+                amount=event.price,
                 status="success"
             )
 
             return booking
-            # return Booking.objects.create(**validated_data)
 
 
 class RoleSerializer(serializers.ModelSerializer):
@@ -114,12 +118,31 @@ class ReviewSerializer(serializers.ModelSerializer):
         if Review.objects.filter(user=user, event=event).exists():
             raise serializers.ValidationError('Вы уже оставили отзыв')
         return data
+
+
 class PaymentSerializer(serializers.ModelSerializer):
-    booking = serializers.StringRelatedField()
+    booking_id = serializers.IntegerField(source='booking.id', read_only=True, allow_null=True)
+    user = serializers.SerializerMethodField()
+    payment_type_display = serializers.CharField(source='get_payment_type_display', read_only=True)
 
     class Meta:
         model = Payment
-        fields = '__all__'
+        fields = [
+            'id', 'booking_id', 'amount', 'status',
+            'created_at', 'user', 'payment_type',
+            'payment_type_display'
+        ]
+
+    def get_user(self, obj):
+        if obj.booking:
+            return obj.booking.user.username
+
+        # Для платежей без бронирования получаем пользователя из контекста запроса
+        request = self.context.get('request')
+        if request and request.user:
+            return request.user.username
+
+        return "Система"
 class AddBalanceSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
 
