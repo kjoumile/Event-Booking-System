@@ -460,34 +460,76 @@ def event_detail_page(request, event_id):
 
     if request.method == "POST":
         if "seat_id" in request.POST:
-            # ... существующий код для бронирования ...
-            pass
+            # Бронирование места
+            seat_id = request.POST.get("seat_id")
+            seat = get_object_or_404(Seat, id=seat_id, event=event, is_booked=False)
+
+            # Проверяем баланс пользователя
+            profile, created = UserProfile.objects.get_or_create(user=request.user)
+
+            if profile.balance < event.price:
+                # Если недостаточно средств
+                return render(request, "templates/pages/event_detail.html", {
+                    "event": event,
+                    "free_seats": free_seats,
+                    "reviews": reviews,
+                    "user_review": user_review,
+                    "error": f"Недостаточно средств на счету. Текущий баланс: {profile.balance} руб. Стоимость: {event.price} руб."
+                })
+
+            # Бронируем с использованием транзакции
+            with transaction.atomic():
+                # Блокируем место для предотвращения гонок
+                seat = Seat.objects.select_for_update().get(pk=seat.id)
+                if seat.is_booked:
+                    return render(request, "templates/pages/event_detail.html", {
+                        "event": event,
+                        "free_seats": free_seats.filter(is_booked=False),
+                        "reviews": reviews,
+                        "user_review": user_review,
+                        "error": "Место уже забронировано"
+                    })
+
+                # Бронируем место
+                seat.is_booked = True
+                seat.save()
+
+                # Создаем бронирование
+                booking = Booking.objects.create(
+                    user=request.user,
+                    event=event,
+                    seat=seat
+                )
+
+                # Списываем деньги
+                profile.balance -= event.price
+                profile.save()
+
+                # Создаем запись о платеже
+                Payment.objects.create(
+                    booking=booking,
+                    amount=event.price,
+                    status="success"
+                )
+
+                # Создаем уведомление
+                create_notifications(
+                    user=request.user,
+                    message=f"Бронирование места {seat.seat_number} на событие '{event.title}' на сумму {event.price} руб."
+                )
+
+                # Логируем
+                create_log(request.user, f'Создал бронирование #{booking.id}')
+
+            # Перенаправляем на страницу успеха
+            return redirect("event_detail_page", event_id=event.id)
 
         elif "review_text" in request.POST:
             # Добавление отзыва
             review_text = request.POST.get("review_text")
-            rating_str = request.POST.get("rating", "5")  # Получаем рейтинг, по умолчанию 5
-
+            rating = request.POST.get('rating', 5)
             if not user_review:  # можно оставить только один отзыв
-                try:
-                    rating = int(rating_str)
-                    if rating < 1 or rating > 5:
-                        rating = 5  # Значение по умолчанию
-
-                    Review.objects.create(
-                        user=request.user,
-                        event=event,
-                        comment=review_text,
-                        rating=rating  # Добавляем рейтинг!
-                    )
-                except ValueError:
-                    # Если рейтинг не число, создаем с рейтингом по умолчанию
-                    Review.objects.create(
-                        user=request.user,
-                        event=event,
-                        comment=review_text,
-                        rating=5
-                    )
+                Review.objects.create(user=request.user, event=event, comment=review_text, rating=int(rating))
             return redirect("event_detail_page", event_id=event.id)
 
     return render(request, "templates/pages/event_detail.html", {
