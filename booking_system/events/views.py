@@ -783,3 +783,36 @@ def create_seats_for_event(event, capacity):
             )
         )
     Seat.objects.bulk_create(seats)
+
+
+@login_required
+def notifications_page(request):
+    """Страница с уведомлениями пользователя"""
+    # Получаем уведомления пользователя
+    notifications = Notification.objects.filter(user=request.user).order_by('-created_at')
+
+    # Помечаем все непрочитанные уведомления как прочитанные
+    unread_notifications = notifications.filter(is_read=False)
+    if unread_notifications.exists():
+        unread_notifications.update(is_read=True)
+
+    # Обработка удаления уведомлений
+    if request.method == "POST" and "delete_notification" in request.POST:
+        notification_id = request.POST.get("notification_id")
+        try:
+            notification = Notification.objects.get(id=notification_id, user=request.user)
+            notification.delete()
+            # Обновляем список
+            notifications = Notification.objects.filter(user=request.user).order_by('-created_at')
+        except Notification.DoesNotExist:
+            pass
+
+    # Обработка удаления всех уведомлений
+    if request.method == "POST" and "delete_all" in request.POST:
+        notifications.delete()
+        notifications = Notification.objects.none()
+
+    return render(request, "templates/pages/notifications.html", {
+        "notifications": notifications,
+        "unread_count": notifications.filter(is_read=False).count()  # для навбара
+    })

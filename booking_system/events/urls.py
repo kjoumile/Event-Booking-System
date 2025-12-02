@@ -44,4 +44,6 @@ urlpatterns = [
 
     # Пополнение баланса
     path('topup/', views.top_up_page, name='payment-topup'),
+
+    path('user-notifications/', views.notifications_page, name='system-notifications'),
 ]
