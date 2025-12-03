@@ -1,6 +1,7 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.http import HttpResponse
 from datetime import datetime
+from .async_service import AsyncNotificationService
 from django.core.exceptions import PermissionDenied
 from rest_framework.views import APIView
 from django.db import IntegrityError
@@ -102,51 +103,87 @@ class EventViewSet(viewsets.ModelViewSet):
 
         # Отправляем уведомления всем, у кого есть бронь
         for booking in updated_event.booking_set.all():
-            create_notifications(
-                user=booking.user,
-                message=f"Событие «{updated_event.title}» было изменено"
+            AsyncNotificationService.fire_and_forget_async(
+                AsyncNotificationService.send_notification_async(
+                    user_id=booking.user.id,
+                    message=f"Событие «{updated_event.title}» было изменено"
+                )
             )
 
         # Записываем лог
         create_log(self.request.user, f"Обновил событие «{updated_event.title}»")
 
     def perform_destroy(self, instance):
-        bookings = list(instance.booking_set.select_related("user"))
         event_title = instance.title
-        event_price = instance.price  # Добавляем цену
+        event_price = instance.price
 
-        # Сначала создаем уведомления
-        for booking in bookings:
-            create_notifications(
-                user=booking.user,
-                message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
+        # Сохраняем данные для асинхронных задач
+        bookings_data = []
+        with transaction.atomic():
+            bookings = list(instance.booking_set.select_related("user", "seat"))
+
+            for booking in bookings:
+                # Сохраняем данные для уведомлений
+                bookings_data.append({
+                    'user_id': booking.user.id,
+                    'username': booking.user.username,
+                    'seat_number': booking.seat.seat_number,
+                })
+
+                # Освобождаем место
+                seat = booking.seat
+                seat.is_booked = False
+                seat.save()
+
+                # Возвращаем деньги
+                profile, _ = UserProfile.objects.get_or_create(user=booking.user)
+                profile.balance += event_price
+                profile.save()
+
+                # Создаем возврат
+                Payment.objects.create(
+                    booking=booking,
+                    amount=event_price,
+                    status="refunded",
+                    payment_type="refund"
+                )
+
+                # Удаляем бронирование
+                booking.delete()
+
+            # Удаляем событие
+            super().perform_destroy(instance)
+
+        # ТРАНЗАКЦИЯ ЗАВЕРШЕНА
+
+        # АСИНХРОННЫЕ ЗАДАЧИ (fire-and-forget)
+        async def async_post_destroy_tasks():
+            """Асинхронные задачи после удаления события"""
+            from .async_service import AsyncNotificationService
+
+            # 1. Отправляем уведомления всем пользователям
+            notification_tasks = []
+            for booking_info in bookings_data:
+                message = f"Событие «{event_title}» отменено. Возвращено {event_price} руб."
+                task = AsyncNotificationService.send_notification_async(
+                    user_id=booking_info['user_id'],
+                    message=message
+                )
+                notification_tasks.append(task)
+
+            # 2. Создаем лог
+            log_task = AsyncNotificationService.create_log_async(
+                user_id=self.request.user.id,
+                action=f"Удалил событие «{event_title}»",
+                ip_address=self.request.META.get("REMOTE_ADDR")
             )
 
-            # освободить место
-            seat = booking.seat
-            seat.is_booked = False
-            seat.save()
+            # Запускаем все задачи параллельно
+            await asyncio.gather(*notification_tasks, log_task, return_exceptions=True)
+            print(f"✅ Асинхронные задачи выполнены: {len(bookings_data)} уведомлений + лог")
 
-
-            profile, _ = UserProfile.objects.get_or_create(user=booking.user)
-            profile.balance += event_price
-            profile.save()
-
-            # Запись о возврате
-            Payment.objects.create(
-                booking=booking,
-                amount=event_price,
-                status="refunded",
-                payment_type="refund"
-            )
-
-            # удалить бронирование
-            booking.delete()
-
-        create_log(self.request.user, f"Удалил событие «{event_title}»")
-
-        # теперь можно удалить событие
-        super().perform_destroy(instance)
+        # Запускаем асинхронные задачи без ожидания
+        AsyncNotificationService.fire_and_forget_async(async_post_destroy_tasks())
 
 class SeatViewSet(viewsets.ModelViewSet):
     queryset = Seat.objects.all()
@@ -212,14 +249,14 @@ class BookingViewSet(viewsets.ModelViewSet):
             )
 
             # Отправляем уведомление владельцу бронирования
-            create_notifications(
+            AsyncNotificationService.send_notification_async(
                 user=booking_user,
                 message=f"Ваше бронирование места {seat.seat_number} на событие '{seat.event.title}' отменено. На ваш баланс возвращено {refund_amount} руб."
             )
 
             # Если отменяет не владелец, отправляем уведомление и отменяющему
             if user != booking_user:
-                create_notifications(
+                AsyncNotificationService.send_notification_async(
                     user=user,
                     message=f"Вы отменили бронирование #{instance.id} пользователя {booking_user.username}"
                 )
@@ -240,7 +277,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = serializer.save(user=self.request.user)
         create_log(self.request.user, f'Создал бронирование #{booking.id}')
 
-        create_notifications(
+        AsyncNotificationService.send_notification_async(
             user=self.request.user,
             message=f"Бронирование места {booking.seat.seat_number} на событие '{booking.event.title}' на сумму {booking.event.price} руб."
         )
@@ -410,176 +447,6 @@ class LogoutView(APIView):
         return Response({"detail": "Вы вышли из системы"}, status=status.HTTP_200_OK)
 
 
-# @login_required
-# def my_bookings_page(request):
-#     """Простая страница с бронированиями"""
-#     # Получаем бронирования пользователя
-#     bookings = Booking.objects.filter(user=request.user).select_related('event', 'seat')
-#
-#     # Обработка отмены бронирования
-#     if request.method == "POST" and "cancel_booking" in request.POST:
-#         booking_id = request.POST.get("booking_id")
-#
-#         try:
-#             booking = Booking.objects.get(id=booking_id, user=request.user)
-#
-#             # Проверяем, существует ли уже платеж для этого бронирования
-#             payment_exists = Payment.objects.filter(booking=booking).exists()
-#
-#             if not payment_exists:
-#                 # Создаем запись о возврате только если платежа не было
-#                 Payment.objects.create(
-#                     booking=booking,
-#                     amount=booking.event.price,
-#                     status="refunded"
-#                 )
-#             else:
-#                 # Если платеж уже существует, можно его обновить или оставить как есть
-#                 # Либо создать новый платеж с booking=None
-#                 Payment.objects.create(
-#                     booking=None,  # Если разрешено NULL в модели
-#                     amount=booking.event.price,
-#                     status="refunded"
-#                 )
-#
-#             # Освобождаем место
-#             seat = booking.seat
-#             seat.is_booked = False
-#             seat.save()
-#
-#             # Возвращаем деньги
-#             profile, _ = UserProfile.objects.get_or_create(user=request.user)
-#             profile.balance += booking.event.price
-#             profile.save()
-#
-#             # Удаляем бронирование
-#             booking.delete()
-#
-#             # Обновляем список
-#             bookings = Booking.objects.filter(user=request.user)
-#
-#         except Booking.DoesNotExist:
-#             pass
-#
-#     return render(request, "templates/pages/my_bookings.html", {
-#         "bookings": bookings
-#     })
-@login_required
-def my_bookings_page(request):
-
-    # Получаем бронирования пользователя
-    bookings = Booking.objects.filter(user=request.user).select_related('event', 'seat')
-
-    # Обработка отмены бронирования с транзакцией
-    if request.method == "POST" and "cancel_booking" in request.POST:
-        booking_id = request.POST.get("booking_id")
-
-        try:
-            # НАЧАЛО ТРАНЗАКЦИИ С ЯВНЫМИ БЛОКИРОВКАМИ
-            with transaction.atomic():
-                # 1. ЯВНО БЛОКИРУЕМ бронирование для изменения
-                booking = Booking.objects.select_for_update().get(
-                    id=booking_id,
-                    user=request.user
-                )
-
-                # 2. БЛОКИРУЕМ место, чтобы никто другой не мог его забронировать
-                seat = Seat.objects.select_for_update().get(id=booking.seat.id)
-
-                # 3. БЛОКИРУЕМ профиль пользователя для изменения баланса
-                profile = UserProfile.objects.select_for_update().get(user=request.user)
-
-                # Проверяем, что событие еще не прошло
-                from django.utils import timezone
-                if booking.event.date <= timezone.now():
-                    # Если событие прошло, выбрасываем исключение
-                    # Это вызовет откат всей транзакции
-                    raise ValueError("Нельзя отменить бронирование на прошедшее событие")
-
-                # 4. ОСВОБОЖДАЕМ МЕСТО
-                seat.is_booked = False
-                seat.save()  # UPDATE под блокировкой
-
-                # 5. ВОЗВРАЩАЕМ ДЕНЬГИ
-                refund_amount = booking.event.price
-                profile.balance += refund_amount
-                profile.save()  # UPDATE под блокировкой
-
-                # 6. СОЗДАЕМ ЗАПИСЬ О ВОЗВРАТЕ
-                # Проверяем существование платежа
-                try:
-                    existing_payment = Payment.objects.get(booking=booking)
-                    # Если платеж существует, создаем новый для возврата
-                    Payment.objects.create(
-                        booking=None,  # или booking для связи
-                        amount=refund_amount,
-                        status="refunded",
-                        payment_type="refund"
-                    )
-                except Payment.DoesNotExist:
-                    # Если платежа нет, создаем возврат с привязкой к бронированию
-                    Payment.objects.create(
-                        booking=booking,
-                        amount=refund_amount,
-                        status="refunded",
-                        payment_type="refund"
-                    )
-
-                # 7. СОЗДАЕМ ЛОГ ВНУТРИ ТРАНЗАКЦИИ
-                Log.objects.create(
-                    user=request.user,
-                    action=f"Отмена бронирования #{booking.id}. Возвращено {refund_amount} руб.",
-                    ip_address=request.META.get("REMOTE_ADDR")
-                )
-
-                # 8. УДАЛЯЕМ БРОНИРОВАНИЕ
-                booking.delete()
-
-                # ТРАНЗАКЦИЯ УСПЕШНО ЗАВЕРШЕНА
-                # Все изменения сохранены в БД
-
-                # 9. ОТПРАВЛЯЕМ УВЕДОМЛЕНИЕ (после коммита транзакции)
-                create_notifications(
-                    user=request.user,
-                    message=f"Отмена бронирования. На ваш баланс возвращено {refund_amount} руб."
-                )
-
-                # Обновляем список бронирований (уже вне транзакции)
-                bookings = Booking.objects.filter(user=request.user)
-
-                return render(request, "templates/pages/my_bookings.html", {
-                    "bookings": bookings,
-                    "success": f"✅ Бронирование отменено. {refund_amount} руб. возвращены на баланс."
-                })
-
-        except Booking.DoesNotExist:
-            # Бронирование не найдено (транзакция не началась)
-            return render(request, "templates/pages/my_bookings.html", {
-                "bookings": bookings,
-                "error": "Бронирование не найдено"
-            })
-
-        except ValueError as e:
-            # Событие уже прошло (транзакция откатилась)
-            return render(request, "templates/pages/my_bookings.html", {
-                "bookings": bookings,
-                "error": str(e)
-            })
-
-        except Exception as e:
-            # Любая другая ошибка (транзакция откатилась)
-            import traceback
-            print(f"Ошибка при отмене бронирования: {e}")
-            print(traceback.format_exc())
-
-            return render(request, "templates/pages/my_bookings.html", {
-                "bookings": bookings,
-                "error": f"Ошибка при отмене бронирования. Пожалуйста, попробуйте позже."
-            })
-
-    return render(request, "templates/pages/my_bookings.html", {
-        "bookings": bookings
-    })
 @login_required
 def event_detail_page(request, event_id):
     event = get_object_or_404(Event, id=event_id)
@@ -587,79 +454,100 @@ def event_detail_page(request, event_id):
     user_review = Review.objects.filter(user=request.user, event=event).first()
     reviews = event.reviews.all()
 
-    if request.method == "POST":
-        if "seat_id" in request.POST:
-            # Бронирование места
-            seat_id = request.POST.get("seat_id")
-            seat = get_object_or_404(Seat, id=seat_id, event=event, is_booked=False)
+    if request.method == "POST" and "seat_id" in request.POST:
+        seat_id = request.POST.get("seat_id")
 
-            # Проверяем баланс пользователя
-            profile, created = UserProfile.objects.get_or_create(user=request.user)
+        try:
+            seat = Seat.objects.get(id=seat_id, event=event, is_booked=False)
+        except Seat.DoesNotExist:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "error": "Место не найдено или уже занято"
+            })
 
-            if profile.balance < event.price:
-                # Если недостаточно средств
-                return render(request, "templates/pages/event_detail.html", {
-                    "event": event,
-                    "free_seats": free_seats,
-                    "reviews": reviews,
-                    "user_review": user_review,
-                    "error": f"Недостаточно средств на счету. Текущий баланс: {profile.balance} руб. Стоимость: {event.price} руб."
-                })
+        try:
+            profile = UserProfile.objects.get(user=request.user)
+        except UserProfile.DoesNotExist:
+            profile = UserProfile.objects.create(user=request.user, balance=0)
 
-            # Бронируем с использованием транзакции
+        if profile.balance < event.price:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "error": f"Недостаточно средств. Баланс: {profile.balance} руб."
+            })
+
+        # СИНХРОННАЯ ТРАНЗАКЦИЯ
+        booking = None
+        try:
             with transaction.atomic():
-                # Блокируем место для предотвращения гонок
-                seat = Seat.objects.select_for_update().get(pk=seat.id)
-                if seat.is_booked:
-                    return render(request, "templates/pages/event_detail.html", {
-                        "event": event,
-                        "free_seats": free_seats.filter(is_booked=False),
-                        "reviews": reviews,
-                        "user_review": user_review,
-                        "error": "Место уже забронировано"
-                    })
+                seat = Seat.objects.select_for_update().get(pk=seat.id, is_booked=False)
 
-                # Бронируем место
                 seat.is_booked = True
                 seat.save()
 
-                # Создаем бронирование
+                profile.balance -= event.price
+                profile.save()
+
                 booking = Booking.objects.create(
                     user=request.user,
                     event=event,
                     seat=seat
                 )
 
-                # Списываем деньги
-                profile.balance -= event.price
-                profile.save()
-
-                # Создаем запись о платеже
                 Payment.objects.create(
                     booking=booking,
                     amount=event.price,
                     status="success"
                 )
 
-                # Создаем уведомление
-                create_notifications(
-                    user=request.user,
+        except Seat.DoesNotExist:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "error": "Место уже занято другим пользователем"
+            })
+        except Exception as e:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "error": f"Ошибка бронирования: {str(e)}"
+            })
+
+        # ТРАНЗАКЦИЯ ЗАВЕРШЕНА
+
+        # АСИНХРОННЫЕ ЗАДАЧИ
+        if booking:
+            async def async_booking_tasks():
+                """Асинхронные задачи после бронирования"""
+                # 1. Уведомление
+                await AsyncNotificationService.send_notification_async(
+                    user_id=request.user.id,
                     message=f"Бронирование места {seat.seat_number} на событие '{event.title}' на сумму {event.price} руб."
                 )
 
-                # Логируем
-                create_log(request.user, f'Создал бронирование #{booking.id}')
+                # 2. Лог
+                await AsyncNotificationService.create_log_async(
+                    user_id=request.user.id,
+                    action=f'Создал бронирование #{booking.id}',
+                    ip_address=request.META.get("REMOTE_ADDR")
+                )
 
-            # Перенаправляем на страницу успеха
-            return redirect("event_detail_page", event_id=event.id)
+                print(f"✅ Асинхронные задачи выполнены для бронирования #{booking.id}")
 
-        elif "review_text" in request.POST:
-            # Добавление отзыва
-            review_text = request.POST.get("review_text")
-            rating = request.POST.get('rating', 5)
-            if not user_review:  # можно оставить только один отзыв
-                Review.objects.create(user=request.user, event=event, comment=review_text, rating=int(rating))
-            return redirect("event_detail_page", event_id=event.id)
+            # Запускаем без ожидания
+            AsyncNotificationService.fire_and_forget_async(async_booking_tasks())
+
+        return redirect("event_detail_page", event_id=event.id)
 
     return render(request, "templates/pages/event_detail.html", {
         "event": event,
@@ -667,7 +555,6 @@ def event_detail_page(request, event_id):
         "reviews": reviews,
         "user_review": user_review
     })
-
 
 from decimal import Decimal
 
@@ -743,9 +630,11 @@ def create_category_page(request):
             ip_address=request.META.get("REMOTE_ADDR")
         )
 
-        create_notifications(
-            user=request.user,
-            message=f"Вы создали категорию '{category.name}'"
+        AsyncNotificationService.fire_and_forget_async(
+            AsyncNotificationService.send_notification_async(
+                user_id=request.user.id,  # ← передаем только ID
+                message=f"Вы создали категорию '{category.name}'"
+            )
         )
 
         return redirect("events_page")
@@ -799,9 +688,11 @@ def create_venue_page(request):
             ip_address=request.META.get("REMOTE_ADDR")
         )
 
-        create_notifications(
-            user=request.user,
-            message=f"Вы создали место проведения '{venue.name}'"
+        AsyncNotificationService.fire_and_forget_async(
+            AsyncNotificationService.send_notification_async(
+                user_id=request.user.id,
+                message=f"Вы создали место проведения '{venue.name}'"
+            )
         )
 
         return redirect("events_page")
@@ -883,13 +774,16 @@ def create_event_page(request):
             ip_address=request.META.get("REMOTE_ADDR")
         )
 
-        create_notifications(
-            user=request.user,
-            message=f"Вы создали событие '{event.title}'"
-        )
-
         # Создаем автоматически места для события
         create_seats_for_event(event, venue.capacity)
+
+        # АСИНХРОННОЕ УВЕДОМЛЕНИЕ
+        AsyncNotificationService.fire_and_forget_async(
+            AsyncNotificationService.send_notification_async(
+                user_id=request.user.id,
+                message=f"Вы создали событие '{event.title}'"
+            )
+        )
 
         return redirect("event_detail_page", event_id=event.id)
 
@@ -977,7 +871,7 @@ def delete_event_post(request, event_id):
     # Получаем событие
     event = get_object_or_404(Event, id=event_id)
 
-    # Проверяем права (как в EventViewSet)
+
     user = request.user
     is_admin = user.roles.filter(role__name="ADMIN").exists()
     is_organizer = user.roles.filter(role__name="ORGANIZER").exists()
@@ -987,7 +881,7 @@ def delete_event_post(request, event_id):
         return redirect('events_page')
 
     try:
-        # Используем транзакцию, как в my_bookings_page
+
         with transaction.atomic():
             # Блокируем событие
             event = Event.objects.select_for_update().get(id=event_id)
@@ -1000,10 +894,14 @@ def delete_event_post(request, event_id):
             # Создаем уведомления и возвращаем деньги
             for booking in bookings:
                 # 1. Уведомление
-                create_notifications(
-                    user=booking.user,
-                    message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
-                )
+
+                for booking in bookings:
+                    AsyncNotificationService.fire_and_forget_async(
+                        AsyncNotificationService.send_notification_async(
+                            user_id=booking.user.id,
+                            message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
+                        )
+                    )
 
                 # 2. Освобождаем место
                 seat = booking.seat
@@ -1040,3 +938,80 @@ def delete_event_post(request, event_id):
         messages.error(request, f"Ошибка при удалении: {e}")
 
     return redirect('events_page')
+
+
+# events/views.py - исправляем my_bookings_page
+@login_required
+def my_bookings_page(request):
+    bookings = Booking.objects.filter(user=request.user).select_related('event', 'seat')
+
+    if request.method == "POST" and "cancel_booking" in request.POST:
+        booking_id = request.POST.get("booking_id")
+
+        try:
+            with transaction.atomic():
+                booking = Booking.objects.select_for_update().get(
+                    id=booking_id,
+                    user=request.user
+                )
+
+                from django.utils import timezone
+                if booking.event.date <= timezone.now():
+                    raise ValueError("Нельзя отменить бронирование на прошедшее событие")
+
+                seat = booking.seat
+                seat.is_booked = False
+                seat.save()
+
+                profile = UserProfile.objects.get(user=request.user)
+                refund_amount = booking.event.price
+                profile.balance += refund_amount
+                profile.save()
+
+                Payment.objects.create(
+                    booking=booking,
+                    amount=refund_amount,
+                    status="refunded",
+                    payment_type="refund"
+                )
+
+                # Сохраняем данные для асинхронных задач
+                saved_booking_id = booking.id
+                saved_seat_number = seat.seat_number
+                saved_event_title = booking.event.title
+
+                booking.delete()
+
+        except Booking.DoesNotExist:
+            return redirect('my_bookings')
+        except Exception as e:
+            return redirect('my_bookings')
+
+        # ТРАНЗАКЦИЯ ЗАВЕРШЕНА
+
+        # АСИНХРОННЫЕ ЗАДАЧИ
+        async def async_cancel_tasks():
+            """Асинхронные задачи после отмены бронирования"""
+            # 1. Уведомление
+            await AsyncNotificationService.send_notification_async(
+                user_id=request.user.id,
+                message=f"Отмена бронирования места {saved_seat_number}. Возвращено {refund_amount} руб."
+            )
+
+            # 2. Лог
+            await AsyncNotificationService.create_log_async(
+                user_id=request.user.id,
+                action=f"Отмена бронирования #{saved_booking_id}. Возвращено {refund_amount} руб.",
+                ip_address=request.META.get("REMOTE_ADDR")
+            )
+
+            print(f"✅ Асинхронные задачи выполнены для отмены #{saved_booking_id}")
+
+        # Запускаем без ожидания
+        AsyncNotificationService.fire_and_forget_async(async_cancel_tasks())
+
+        return redirect('my_bookings')
+
+    return render(request, "templates/pages/my_bookings.html", {
+        "bookings": bookings
+    })
