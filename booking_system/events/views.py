@@ -249,16 +249,20 @@ class BookingViewSet(viewsets.ModelViewSet):
             )
 
             # Отправляем уведомление владельцу бронирования
-            AsyncNotificationService.send_notification_async(
-                user=booking_user,
-                message=f"Ваше бронирование места {seat.seat_number} на событие '{seat.event.title}' отменено. На ваш баланс возвращено {refund_amount} руб."
+            AsyncNotificationService.fire_and_forget_async(
+                AsyncNotificationService.send_notification_async(
+                    user_id=booking_user.id,  # ← ПРАВИЛЬНО
+                    message=f"Ваше бронирование места {seat.seat_number} на событие '{seat.event.title}' отменено. На ваш баланс возвращено {refund_amount} руб."
+                )
             )
 
-            # Если отменяет не владелец, отправляем уведомление и отменяющему
+            # И второе уведомление:
             if user != booking_user:
-                AsyncNotificationService.send_notification_async(
-                    user=user,
-                    message=f"Вы отменили бронирование #{instance.id} пользователя {booking_user.username}"
+                AsyncNotificationService.fire_and_forget_async(
+                    AsyncNotificationService.send_notification_async(
+                        user_id=user.id,  # ← ПРАВИЛЬНО
+                        message=f"Вы отменили бронирование #{instance.id} пользователя {booking_user.username}"
+                    )
                 )
 
             # Удаляем бронирование (платеж с on_delete=CASCADE удалится автоматически)
@@ -277,9 +281,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = serializer.save(user=self.request.user)
         create_log(self.request.user, f'Создал бронирование #{booking.id}')
 
-        AsyncNotificationService.send_notification_async(
-            user=self.request.user,
-            message=f"Бронирование места {booking.seat.seat_number} на событие '{booking.event.title}' на сумму {booking.event.price} руб."
+        AsyncNotificationService.fire_and_forget_async(
+            AsyncNotificationService.send_notification_async(
+                user_id=self.request.user.id,  # ← ПРАВИЛЬНО
+                message=f"Бронирование места {booking.seat.seat_number} на событие '{booking.event.title}' на сумму {booking.event.price} руб."
+            )
         )
 
 # Create your views here.
@@ -893,15 +899,13 @@ def delete_event_post(request, event_id):
 
             # Создаем уведомления и возвращаем деньги
             for booking in bookings:
-                # 1. Уведомление
-
-                for booking in bookings:
-                    AsyncNotificationService.fire_and_forget_async(
-                        AsyncNotificationService.send_notification_async(
-                            user_id=booking.user.id,
-                            message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
-                        )
+                # 1. Уведомление (асинхронно)
+                AsyncNotificationService.fire_and_forget_async(
+                    AsyncNotificationService.send_notification_async(
+                        user_id=booking.user.id,
+                        message=f"Событие «{event_title}» было отменено. Ваше бронирование отменено. Возвращено {event_price} руб."
                     )
+                )
 
                 # 2. Освобождаем место
                 seat = booking.seat
