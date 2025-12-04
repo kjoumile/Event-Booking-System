@@ -292,12 +292,12 @@ class BookingViewSet(viewsets.ModelViewSet):
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdmin]
 
 class UserRoleViewSet(viewsets.ModelViewSet):
     queryset = UserRole.objects.all()
     serializer_class = UserRoleSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdmin]
 
 class ReviewViewSet(viewsets.ModelViewSet):
     queryset = Review.objects.all()
@@ -377,7 +377,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 class LogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Log.objects.all()
     serializer_class = LogSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsAdmin]
 
 class UserProfileViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = UserProfile.objects.all()
@@ -562,7 +562,7 @@ def event_detail_page(request, event_id):
         "user_review": user_review
     })
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 
 @login_required
@@ -999,7 +999,7 @@ def my_bookings_page(request):
             # 1. Уведомление
             await AsyncNotificationService.send_notification_async(
                 user_id=request.user.id,
-                message=f"Отмена бронирования места {saved_seat_number}. Возвращено {refund_amount} руб."
+                message=f"Отмена бронирования места {saved_seat_number} на событие '{booking.event.title}'. Возвращено {refund_amount} руб."
             )
 
             # 2. Лог
@@ -1009,7 +1009,7 @@ def my_bookings_page(request):
                 ip_address=request.META.get("REMOTE_ADDR")
             )
 
-            print(f"✅ Асинхронные задачи выполнены для отмены #{saved_booking_id}")
+            print(f"Асинхронные задачи выполнены для отмены #{saved_booking_id}")
 
         # Запускаем без ожидания
         AsyncNotificationService.fire_and_forget_async(async_cancel_tasks())
