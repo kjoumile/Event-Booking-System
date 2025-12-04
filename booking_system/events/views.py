@@ -459,7 +459,76 @@ def event_detail_page(request, event_id):
     free_seats = event.seats.filter(is_booked=False)
     user_review = Review.objects.filter(user=request.user, event=event).first()
     reviews = event.reviews.all()
+    if request.method == "POST" and "rating" in request.POST:
+        # Проверяем, не оставлял ли уже пользователь отзыв
+        if user_review:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "review_error": "Вы уже оставляли отзыв на это событие"
+            })
 
+        rating = request.POST.get("rating")
+        comment = request.POST.get("review_text", "")
+        print(f"Рейтинг: {rating}, Комментарий: '{comment}'")  # ← И ЭТУ
+        if not rating:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "review_error": "Оценка обязательна"
+            })
+
+        try:
+            rating_int = int(rating)
+            if rating_int < 1 or rating_int > 5:
+                return render(request, "templates/pages/event_detail.html", {
+                    "event": event,
+                    "free_seats": free_seats,
+                    "reviews": reviews,
+                    "user_review": user_review,
+                    "review_error": "Оценка должна быть от 1 до 5"
+                })
+        except ValueError:
+            return render(request, "templates/pages/event_detail.html", {
+                "event": event,
+                "free_seats": free_seats,
+                "reviews": reviews,
+                "user_review": user_review,
+                "review_error": "Некорректная оценка"
+            })
+
+        # Создаем отзыв
+        review = Review.objects.create(
+            user=request.user,
+            event=event,
+            rating=rating_int,
+            comment=comment
+        )
+
+        # Обновляем переменные
+        user_review = review
+        reviews = event.reviews.all()
+
+        # Логируем
+        Log.objects.create(
+            user=request.user,
+            action=f"Оставил отзыв #{review.id} на событие {event.title}",
+            ip_address=request.META.get("REMOTE_ADDR")
+        )
+
+        # Асинхронное уведомление
+        AsyncNotificationService.fire_and_forget_async(
+            AsyncNotificationService.send_notification_async(
+                user_id=request.user.id,
+                message=f"Вы оставили отзыв на событие '{event.title}'"
+            )
+        )
+
+        return redirect("event_detail_page", event_id=event.id)
     if request.method == "POST" and "seat_id" in request.POST:
         seat_id = request.POST.get("seat_id")
 
