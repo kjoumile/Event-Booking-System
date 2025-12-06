@@ -84,8 +84,8 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'event_booking_db',
-        'USER': 'event_user',  # Используйте postgres вместо event_user
-        'PASSWORD': 'user_password',  # Пароль который ставили при установке
+        'USER': 'event_user',
+        'PASSWORD': 'user_password',
         'HOST': 'localhost',
         'PORT': '5432',
         'OPTIONS': {
